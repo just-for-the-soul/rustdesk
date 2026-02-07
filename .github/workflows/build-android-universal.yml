@@ -77,17 +77,11 @@ jobs:
         vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
         doNotCache: false
 
-    - name: Install vcpkg dependencies for arm64
+    # ВАЖНО: Собираем vcpkg ТОЛЬКО ОДИН РАЗ для arm64
+    # Заголовки одинаковые для всех архитектур!
+    - name: Install vcpkg dependencies (only once for arm64)
       run: |
         if ! ./flutter/build_android_deps.sh "arm64-v8a"; then
-          find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
-            echo "$_1:"; cat "$_1"; echo "======"; done
-          exit 1
-        fi
-
-    - name: Install vcpkg dependencies for armv7
-      run: |
-        if ! ./flutter/build_android_deps.sh "armeabi-v7a"; then
           find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
             echo "$_1:"; cat "$_1"; echo "======"; done
           exit 1
@@ -122,15 +116,11 @@ jobs:
         rustup default ${{ env.RUST_VERSION }}
         rustup target add aarch64-linux-android
         
-        # Собираем arm64
         ./flutter/ndk_arm64.sh
         
-        # Копируем библиотеку arm64
         mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
         cp ./target/aarch64-linux-android/release/liblibrustdesk.so \
            ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
-        
-        # Копируем libc++_shared.so для arm64
         cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so \
            ./flutter/android/app/src/main/jniLibs/arm64-v8a/
 
@@ -143,15 +133,11 @@ jobs:
         rustup default ${{ env.RUST_VERSION }}
         rustup target add armv7-linux-androideabi
         
-        # Собираем armv7
         ./flutter/ndk_arm.sh
         
-        # Копируем библиотеку armv7
         mkdir -p ./flutter/android/app/src/main/jniLibs/armeabi-v7a
         cp ./target/armv7-linux-androideabi/release/liblibrustdesk.so \
            ./flutter/android/app/src/main/jniLibs/armeabi-v7a/librustdesk.so
-        
-        # Копируем libc++_shared.so для armv7
         cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/arm-linux-androideabi/libc++_shared.so \
            ./flutter/android/app/src/main/jniLibs/armeabi-v7a/
 
@@ -161,18 +147,13 @@ jobs:
       run: |
         export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
         
-        # Увеличиваем память Gradle
         sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
-        
-        # Используем debug signing (без секретов)
         sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
         
-        # Собираем универсальный APK (обе архитектуры в одном файле)
         cd flutter
         flutter pub get
         flutter build apk --release --target-platform android-arm64,android-arm
         
-        # Переименовываем
         mkdir -p ../signed-apk
         mv build/app/outputs/flutter-apk/app-release.apk \
            ../signed-apk/rustdesk-${{ env.VERSION }}-universal.apk
@@ -184,5 +165,4 @@ jobs:
         name: rustdesk-${{ env.VERSION }}-universal-apk
         path: signed-apk/*.apk
         retention-days: 7
-
 
