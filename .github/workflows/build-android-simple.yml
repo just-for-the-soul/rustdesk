@@ -99,6 +99,9 @@ jobs:
       run: |
         source $HOME/.cargo/env
         rustup default stable
+        cd flutter
+        flutter pub get
+        cd ..
         flutter_rust_bridge_codegen \
           --rust-input src/flutter_ffi.rs \
           --dart-output flutter/lib/generated_bridge.dart \
