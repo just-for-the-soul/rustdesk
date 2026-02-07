@@ -70,23 +70,6 @@ jobs:
         ndk-version: ${{ env.NDK_VERSION }}
         add-to-path: true
 
-    - name: Setup vcpkg
-      uses: lukka/run-vcpkg@v11
-      with:
-        vcpkgDirectory: /opt/artifacts/vcpkg
-        vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
-        doNotCache: false
-
-    # ВАЖНО: Собираем vcpkg ТОЛЬКО ОДИН РАЗ для arm64
-    # Заголовки одинаковые для всех архитектур!
-    - name: Install vcpkg dependencies (only once for arm64)
-      run: |
-        if ! ./flutter/build_android_deps.sh "arm64-v8a"; then
-          find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
-            echo "$_1:"; cat "$_1"; echo "======"; done
-          exit 1
-        fi
-
     - name: Install Rust (stable for tools)
       run: |
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
@@ -107,10 +90,29 @@ jobs:
           --dart-output flutter/lib/generated_bridge.dart \
           --c-output flutter/macos/Runner/bridge_generated.h
 
+
+
+    - name: Setup vcpkg for arm64
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgDirectory: /opt/artifacts/vcpkg-arm64  # Отдельная директория!
+        vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+        doNotCache: false
+
+    - name: Install vcpkg dependencies for arm64
+      run: |
+        export VCPKG_ROOT=/opt/artifacts/vcpkg-arm64
+        if ! ./flutter/build_android_deps.sh "arm64-v8a"; then
+          find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+            echo "$_1:"; cat "$_1"; done
+          exit 1
+        fi
+
     - name: Build Rust library for arm64
       env:
         ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        VCPKG_ROOT: /opt/artifacts/vcpkg-arm64  # Указываем правильный путь
       run: |
         source $HOME/.cargo/env
         rustup default ${{ env.RUST_VERSION }}
@@ -124,10 +126,28 @@ jobs:
         cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so \
            ./flutter/android/app/src/main/jniLibs/arm64-v8a/
 
+
+    - name: Setup vcpkg for armv7
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgDirectory: /opt/artifacts/vcpkg-armv7  # Другая директория!
+        vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+        doNotCache: false
+
+    - name: Install vcpkg dependencies for armv7
+      run: |
+        export VCPKG_ROOT=/opt/artifacts/vcpkg-armv7
+        if ! ./flutter/build_android_deps.sh "armeabi-v7a"; then
+          find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+            echo "$_1:"; cat "$_1"; done
+          exit 1
+        fi
+
     - name: Build Rust library for armv7
       env:
         ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        VCPKG_ROOT: /opt/artifacts/vcpkg-armv7  # Указываем правильный путь
       run: |
         source $HOME/.cargo/env
         rustup default ${{ env.RUST_VERSION }}
@@ -140,6 +160,10 @@ jobs:
            ./flutter/android/app/src/main/jniLibs/armeabi-v7a/librustdesk.so
         cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/arm-linux-androideabi/libc++_shared.so \
            ./flutter/android/app/src/main/jniLibs/armeabi-v7a/
+
+
+
+
 
     - name: Build Universal APK
       env:
@@ -165,4 +189,9 @@ jobs:
         name: rustdesk-${{ env.VERSION }}-universal-apk
         path: signed-apk/*.apk
         retention-days: 7
+
+
+
+
+
 
