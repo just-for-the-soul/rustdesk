@@ -409,7 +409,7 @@ impl VideoQoS {
             .filter(|q| *q != None)
             .max_by(|a, b| a.unwrap_or_default().0.cmp(&b.unwrap_or_default().0))
             .flatten()
-            .unwrap_or((0, Quality::Speed))
+            .unwrap_or((0, Quality::Balanced))
             .1
     }
 

@@ -594,8 +594,8 @@ fn run(vs: VideoService) -> ResultType<()> {
                 width: c.width as _,
                 height: c.height as _,
                 quality,
-                codec: VpxVideoCodecId::VP9,
-                keyframe_interval: None,
+                codec: VpxVideoCodecId::H264,
+                keyframe_interval: Some(1),
             }));
             setup_encoder(
                 &c,
@@ -1000,7 +1000,7 @@ fn get_encoder_config(
                 width: c.width as _,
                 height: c.height as _,
                 quality,
-                codec: VpxVideoCodecId::VP9,
+                codec: VpxVideoCodecId::H264,
                 keyframe_interval,
             })
         }
@@ -1025,7 +1025,7 @@ fn get_encoder_config(
             width: c.width as _,
             height: c.height as _,
             quality,
-            codec: VpxVideoCodecId::VP9,
+            codec: VpxVideoCodecId::H264,
             keyframe_interval,
         }),
     }
