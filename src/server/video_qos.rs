@@ -28,10 +28,11 @@ delay:
 */
 
 // Constants
-pub const FPS: u32 = 30;
 pub const MIN_FPS: u32 = 1;
 pub const MAX_FPS: u32 = 120;
-pub const INIT_FPS: u32 = 15;
+
+pub const FPS: u32 = 60;       // Максимальный дефолт
+pub const INIT_FPS: u32 = 30;  // Выше начальный FPS
 
 // Bitrate ratio constants for different quality levels
 const BR_MAX: f32 = 40.0; // 2000 * 2 / 100
@@ -158,7 +159,7 @@ impl VideoQoS {
     // Get current bitrate ratio with bounds checking
     pub fn ratio(&mut self) -> f32 {
         if self.ratio < BR_MIN_HIGH_RESOLUTION || self.ratio > BR_MAX {
-            self.ratio = BR_BALANCED;
+            self.ratio = BR_SPEED;
         }
         self.ratio
     }
