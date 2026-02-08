@@ -117,7 +117,7 @@ impl Default for VideoQoS {
     fn default() -> Self {
         VideoQoS {
             fps: FPS,
-            ratio: BR_BALANCED,
+            ratio: BR_SPEED,
             users: Default::default(),
             displays: Default::default(),
             bitrate_store: 0,
@@ -408,7 +408,7 @@ impl VideoQoS {
             .filter(|q| *q != None)
             .max_by(|a, b| a.unwrap_or_default().0.cmp(&b.unwrap_or_default().0))
             .flatten()
-            .unwrap_or((0, Quality::Balanced))
+            .unwrap_or((0, Quality::Speed))
             .1
     }
 
