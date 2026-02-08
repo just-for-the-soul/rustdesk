@@ -1011,7 +1011,7 @@ fn get_encoder_config(
             codec: if format == CodecFormat::VP8 {
                 VpxVideoCodecId::VP8
             } else {
-                VpxVideoCodecId::VP9
+                VpxVideoCodecId::H264
             },
             keyframe_interval,
         }),
