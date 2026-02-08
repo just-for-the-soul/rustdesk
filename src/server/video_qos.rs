@@ -250,11 +250,11 @@ impl VideoQoS {
 
         // For bad network, small fps means quick reaction and high quality
         let (min_fps, normal_fps) = if target_ratio >= BR_BEST {
-            (8, 16)
+            (15, 30)  // Больше FPS для лучшего качества
         } else if target_ratio >= BR_BALANCED {
-            (10, 20)
+            (20, 40)  // Больше FPS для balanced
         } else {
-            (12, 24)
+            (24, 60)  // Максимум для speed режима
         };
 
         // Calculate minimum acceptable delay-fps product
