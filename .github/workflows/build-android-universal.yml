@@ -90,12 +90,49 @@ jobs:
           --dart-output flutter/lib/generated_bridge.dart \
           --c-output flutter/macos/Runner/bridge_generated.h
 
+    # ========================================
+    # НОВОЕ: Сохраняем bridge files как артефакт
+    # ========================================
+    - name: Package bridge files
+      run: |
+        mkdir -p artifacts/bridge-files
+        cp flutter/lib/generated_bridge.dart artifacts/bridge-files/
+        cp flutter/macos/Runner/bridge_generated.h artifacts/bridge-files/
+        
+        # Создаем README
+        cat > artifacts/bridge-files/README.md << 'EOF'
+        # Flutter Bridge Files
+        
+        Generated FFI bridge files for RustDesk Android.
+        
+        ## Files:
+        - `generated_bridge.dart` - Dart FFI bindings
+        - `bridge_generated.h` - C header for FFI
+        
+        ## Usage:
+        Copy these files to skip bridge generation step:
+        ```bash
+        cp generated_bridge.dart <rustdesk>/flutter/lib/
+        cp bridge_generated.h <rustdesk>/flutter/macos/Runner/
+        ```
+        
+        Compatible with:
+        - RustDesk: ${{ env.VERSION }}
+        - Rust: ${{ env.RUST_VERSION }}
+        - Flutter: ${{ env.FLUTTER_VERSION }}
+        EOF
 
+    - name: Upload bridge files artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: rustdesk-${{ env.VERSION }}-bridge-files
+        path: artifacts/bridge-files/
+        retention-days: 30
 
     - name: Setup vcpkg for arm64
       uses: lukka/run-vcpkg@v11
       with:
-        vcpkgDirectory: /opt/artifacts/vcpkg-arm64  # Отдельная директория!
+        vcpkgDirectory: /opt/artifacts/vcpkg-arm64
         vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
         doNotCache: false
 
@@ -112,25 +149,35 @@ jobs:
       env:
         ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
-        VCPKG_ROOT: /opt/artifacts/vcpkg-arm64  # Указываем правильный путь
+        VCPKG_ROOT: /opt/artifacts/vcpkg-arm64
       run: |
         source $HOME/.cargo/env
         rustup default ${{ env.RUST_VERSION }}
         rustup target add aarch64-linux-android
-        
+
         ./flutter/ndk_arm64.sh
-        
+
         mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
         cp ./target/aarch64-linux-android/release/liblibrustdesk.so \
            ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
         cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so \
            ./flutter/android/app/src/main/jniLibs/arm64-v8a/
 
+    # ========================================
+    # НОВОЕ: Сохраняем arm64 библиотеки
+    # ========================================
+    - name: Package arm64 libraries
+      run: |
+        mkdir -p artifacts/native-libs/arm64-v8a
+        cp ./target/aarch64-linux-android/release/liblibrustdesk.so \
+           artifacts/native-libs/arm64-v8a/librustdesk.so
+        cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so \
+           artifacts/native-libs/arm64-v8a/
 
     - name: Setup vcpkg for armv7
       uses: lukka/run-vcpkg@v11
       with:
-        vcpkgDirectory: /opt/artifacts/vcpkg-armv7  # Другая директория!
+        vcpkgDirectory: /opt/artifacts/vcpkg-armv7
         vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
         doNotCache: false
 
@@ -147,37 +194,173 @@ jobs:
       env:
         ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
-        VCPKG_ROOT: /opt/artifacts/vcpkg-armv7  # Указываем правильный путь
+        VCPKG_ROOT: /opt/artifacts/vcpkg-armv7
       run: |
         source $HOME/.cargo/env
         rustup default ${{ env.RUST_VERSION }}
         rustup target add armv7-linux-androideabi
-        
+
         ./flutter/ndk_arm.sh
-        
+
         mkdir -p ./flutter/android/app/src/main/jniLibs/armeabi-v7a
         cp ./target/armv7-linux-androideabi/release/liblibrustdesk.so \
            ./flutter/android/app/src/main/jniLibs/armeabi-v7a/librustdesk.so
         cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/arm-linux-androideabi/libc++_shared.so \
            ./flutter/android/app/src/main/jniLibs/armeabi-v7a/
 
+    # ========================================
+    # НОВОЕ: Сохраняем armv7 библиотеки
+    # ========================================
+    - name: Package armv7 libraries
+      run: |
+        mkdir -p artifacts/native-libs/armeabi-v7a
+        cp ./target/armv7-linux-androideabi/release/liblibrustdesk.so \
+           artifacts/native-libs/armeabi-v7a/librustdesk.so
+        cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/arm-linux-androideabi/libc++_shared.so \
+           artifacts/native-libs/armeabi-v7a/
 
+    # ========================================
+    # НОВОЕ: Создаем полный sharepack
+    # ========================================
+    - name: Create sharepack
+      run: |
+        # Создаем структуру sharepack
+        mkdir -p sharepack/jniLibs
+        cp -r artifacts/native-libs/* sharepack/jniLibs/
+        cp -r artifacts/bridge-files sharepack/
+        
+        # Создаем README для sharepack
+        cat > sharepack/README.md << 'EOF'
+        # RustDesk Android Build Artifacts
+        
+        Pre-compiled libraries and bridge files for fast RustDesk Android APK rebuild.
+        
+        ## Quick Usage (Skip Rust Compilation):
+        
+        ```bash
+        # 1. Clone RustDesk
+        git clone --recurse-submodules https://github.com/rustdesk/rustdesk
+        cd rustdesk
+        
+        # 2. Extract sharepack
+        unzip rustdesk-sharepack.zip
+        
+        # 3. Copy libraries
+        mkdir -p flutter/android/app/src/main/jniLibs
+        cp -r sharepack/jniLibs/* flutter/android/app/src/main/jniLibs/
+        
+        # 4. Copy bridge files
+        cp sharepack/bridge-files/generated_bridge.dart flutter/lib/
+        
+        # 5. Build APK (3-5 minutes instead of 40-60!)
+        cd flutter
+        flutter pub get
+        flutter build apk --release --target-platform android-arm64,android-arm
+        ```
+        
+        ## Contents:
+        
+        ### jniLibs/
+        - `arm64-v8a/librustdesk.so` - Main Rust library (arm64)
+        - `arm64-v8a/libc++_shared.so` - C++ runtime (arm64)
+        - `armeabi-v7a/librustdesk.so` - Main Rust library (armv7)
+        - `armeabi-v7a/libc++_shared.so` - C++ runtime (armv7)
+        
+        ### bridge-files/
+        - `generated_bridge.dart` - Dart FFI bindings
+        - `bridge_generated.h` - C FFI headers
+        
+        ## Build Info:
+        - Version: ${{ env.VERSION }}
+        - Rust: ${{ env.RUST_VERSION }}
+        - Flutter: ${{ env.FLUTTER_VERSION }}
+        - NDK: ${{ env.NDK_VERSION }}
+        - Built: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+        - Commit: ${{ github.sha }}
+        
+        ## File Sizes:
+        - arm64 library: ~15-20 MB
+        - armv7 library: ~15-20 MB
+        - Total: ~40-50 MB
+        
+        ## Notes:
+        ⚠️ These libraries are specific to RustDesk version ${{ env.VERSION }}
+        ⚠️ Must use same Rust/Flutter/NDK versions
+        ✅ Saves 30-40 minutes on each rebuild
+        ✅ Perfect for testing Flutter UI changes
+        EOF
+        
+        # Создаем install script
+        cat > sharepack/install.sh << 'INSTALL_SCRIPT'
+        #!/bin/bash
+        set -e
+        
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        
+        if [ ! -d "flutter" ]; then
+            echo "Error: Run this script from RustDesk root directory"
+            echo "Usage: cd rustdesk && bash /path/to/sharepack/install.sh"
+            exit 1
+        fi
+        
+        echo "Installing pre-compiled libraries..."
+        
+        # Copy jniLibs
+        mkdir -p flutter/android/app/src/main/jniLibs
+        cp -r "$SCRIPT_DIR/jniLibs/"* flutter/android/app/src/main/jniLibs/
+        echo "✓ Copied native libraries"
+        
+        # Copy bridge files
+        cp "$SCRIPT_DIR/bridge-files/generated_bridge.dart" flutter/lib/
+        echo "✓ Copied bridge files"
+        
+        echo ""
+        echo "Installation complete!"
+        echo ""
+        echo "Next steps:"
+        echo "  cd flutter"
+        echo "  flutter pub get"
+        echo "  flutter build apk --release --target-platform android-arm64,android-arm"
+        INSTALL_SCRIPT
+        
+        chmod +x sharepack/install.sh
+        
+        # Создаем архив
+        cd sharepack
+        zip -r ../rustdesk-${{ env.VERSION }}-sharepack.zip .
+        cd ..
+        
+        # Информация
+        echo "Sharepack created:"
+        ls -lh rustdesk-${{ env.VERSION }}-sharepack.zip
 
+    - name: Upload native libraries artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: rustdesk-${{ env.VERSION }}-native-libs
+        path: artifacts/native-libs/
+        retention-days: 30
 
+    - name: Upload complete sharepack
+      uses: actions/upload-artifact@v4
+      with:
+        name: rustdesk-${{ env.VERSION }}-sharepack
+        path: rustdesk-${{ env.VERSION }}-sharepack.zip
+        retention-days: 30
 
     - name: Build Universal APK
       env:
         JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
       run: |
         export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
-        
+
         sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
         sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
-        
+
         cd flutter
         flutter pub get
         flutter build apk --release --target-platform android-arm64,android-arm
-        
+
         mkdir -p ../signed-apk
         mv build/app/outputs/flutter-apk/app-release.apk \
            ../signed-apk/rustdesk-${{ env.VERSION }}-universal.apk
@@ -190,8 +373,31 @@ jobs:
         path: signed-apk/*.apk
         retention-days: 7
 
-
-
-
-
+    # ========================================
+    # НОВОЕ: Summary с информацией об артефактах
+    # ========================================
+    - name: Build Summary
+      if: always()
+      run: |
+        echo "## Build Artifacts Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Available Downloads:" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "1. **Universal APK** - Ready to install" >> $GITHUB_STEP_SUMMARY
+        echo "2. **Native Libraries** - Pre-compiled .so files" >> $GITHUB_STEP_SUMMARY
+        echo "3. **Bridge Files** - FFI bindings (Dart + C)" >> $GITHUB_STEP_SUMMARY
+        echo "4. **Complete Sharepack** - All-in-one package for fast rebuild" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### File Sizes:" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        ls -lh signed-apk/*.apk 2>/dev/null || echo "APK not found"
+        ls -lh rustdesk-${{ env.VERSION }}-sharepack.zip 2>/dev/null || echo "Sharepack not found"
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Build Info:" >> $GITHUB_STEP_SUMMARY
+        echo "- Version: \`${{ env.VERSION }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- Rust: \`${{ env.RUST_VERSION }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- Flutter: \`${{ env.FLUTTER_VERSION }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- NDK: \`${{ env.NDK_VERSION }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- Commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
 
