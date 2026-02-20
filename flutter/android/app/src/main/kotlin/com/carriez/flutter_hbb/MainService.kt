@@ -206,6 +206,13 @@ class MainService : Service() {
             get() = _isAudioStart
     }
 
+    enum class CaptureMethod {
+	    MEDIA_PROJECTION,
+	    XML_ACCESSIBILITY
+    }
+
+    private var currentCaptureMethod = CaptureMethod.MEDIA_PROJECTION                                   private var xmlScreenCapture: XmlScreenCapture? = null
+
     private val logTag = "LOG_SERVICE"
     private val useVP9 = false
     private val binder = LocalBinder()
@@ -403,10 +410,51 @@ class MainService : Service() {
         return audioRecordHandle.onVoiceCallClosed(mediaProjection)
     }
 
+    private fun selectCaptureMethod(): CaptureMethod {
+	    if (mediaProjection != null) {
+		    Log.i(logTag, "Using MediaProjection (30-60 FPS)")
+		    return CaptureMethod.MEDIA_PROJECTION
+	    }
+
+	    if (InputService.isOpen) {
+		    Log.i(logTag, "Using XML Accessibility (12-16 FPS, NO INDICATOR)")
+		    return CaptureMethod.XML_ACCESSIBILITY
+	    }
+
+	    return CaptureMethod.MEDIA_PROJECTION
+    }
+
+    private fun startXmlCapture(): Boolean {
+	    Log.d(logTag, "Start XML Capture")
+
+	    if (!InputService.isOpen) {
+		    Log.e(logTag, "InputService not available")
+		    return false
+	    }
+
+	    xmlScreenCapture = XmlScreenCapture()
+	    xmlScreenCapture?.start()
+
+	    _isStart = true
+	    FFI.setFrameRawEnable("video", true)
+	    MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
+
+	    return true
+    }
+
     fun startCapture(): Boolean {
         if (isStart) {
             return true
         }
+
+
+	currentCaptureMethod = selectCaptureMethod()
+
+	if (currentCaptureMethod == CaptureMethod.XML_ACCESSIBILITY) {
+		return startXmlCapture()
+	}
+
+
         if (mediaProjection == null) {
             Log.w(logTag, "startCapture fail,mediaProjection is null")
             return false
@@ -443,6 +491,12 @@ class MainService : Service() {
         FFI.setFrameRawEnable("video",false)
         _isStart = false
         MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
+
+	if (currentCaptureMethod == CaptureMethod.XML_ACCESSIBILITY) {
+		xmlScreenCapture?.stop()
+		xmlScreenCapture = null
+		return
+	}
         // release video
         if (reuseVirtualDisplay) {
             // The virtual display video projection can be paused by calling `setSurface(null)`.
