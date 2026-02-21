@@ -1,6 +1,6 @@
 package com.carriez.flutter_hbb
 
-import android.graphics.*
+import android.graphics.Bitmap
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
@@ -8,147 +8,105 @@ import ffi.FFI
 import java.nio.ByteBuffer
 
 /**
- * XML-based screen capture как альтернатива MediaProjection
- * Интегрируется прозрачно с MainService
+ * XML Screen Capture для RustDesk
+ * Интегрируется с MainService без изменений Rust кода!
  */
 class XmlScreenCapture {
     private val TAG = "XmlScreenCapture"
-    
+
     private var captureThread: HandlerThread? = null
     private var captureHandler: Handler? = null
     private var isRunning = false
-    
+
     private var optimizedCapture: OptimizedXmlCapture? = null
     
-    /**
-     * Запускает XML захват
-     * Использует тот же callback FFI.onVideoFrameUpdate() как MediaProjection!
-     */
+    // Переиспользуемый буфер для передачи данных в Rust (предотвращает OOM)
+    private var sharedBuffer: ByteBuffer? = null
+
     fun start() {
         if (isRunning) {
             Log.w(TAG, "Already running")
             return
         }
-        
-        // Проверяем что InputService активен
+
         val service = InputService.ctx
         if (service == null) {
             Log.e(TAG, "InputService not available!")
             return
         }
-        
-        Log.i(TAG, "Starting XML screen capture")
-        
-        // Создаем OptimizedXmlCapture
-        optimizedCapture = OptimizedXmlCapture(service).apply {
-            // Настройки производительности
-            downscaleFactor = 0.5f  // Половина разрешения
-            jpegQuality = 60        // Среднее качество
-            cacheEnabled = true     // Кэш статичных элементов
-            deltaEnabled = false    // Дельта пока отключена (нужна поддержка в клиенте)
-        }
-        
-        // Создаем отдельный поток для захвата
-        captureThread = HandlerThread("XmlCaptureThread").apply {
+
+        Log.i(TAG, "Starting XML screen capture (12-16 FPS, NO RECORDING INDICATOR)")
+
+        optimizedCapture = OptimizedXmlCapture(service)
+
+        captureThread = HandlerThread("XmlCapture").apply {
             start()
             captureHandler = Handler(looper)
         }
-        
+
         isRunning = true
-        
-        // Запускаем захват кадров
         scheduleNextCapture()
     }
-    
-    /**
-     * Останавливает захват
-     */
+
     fun stop() {
         if (!isRunning) return
-        
+
         Log.i(TAG, "Stopping XML screen capture")
         isRunning = false
-        
+
         captureHandler?.removeCallbacksAndMessages(null)
         captureThread?.quitSafely()
         captureThread = null
         captureHandler = null
-        
         optimizedCapture = null
+        
+        // Очищаем ссылку на буфер
+        sharedBuffer = null
     }
-    
-    /**
-     * Планирует следующий захват кадра
-     */
+
     private fun scheduleNextCapture() {
         if (!isRunning) return
-        
+
         captureHandler?.post {
             captureFrame()
-            
-            // Следующий кадр через ~60-80ms (12-16 FPS)
+
+            // ~70ms delay = ~14 FPS
             captureHandler?.postDelayed({
                 scheduleNextCapture()
             }, 70)
         }
     }
-    
-    /**
-     * Захватывает один кадр и отправляет в Rust
-     */
+
     private fun captureFrame() {
         try {
-            val startTime = System.currentTimeMillis()
-            
-            // Захватываем через OptimizedXmlCapture
-            val result = optimizedCapture?.captureOptimized()
-            
-            if (result == null) {
-                Log.w(TAG, "Capture returned null")
-                return
+            val result = optimizedCapture?.captureOptimized() ?: return
+            val bitmap = result.bitmap
+
+            // Рассчитываем необходимый размер буфера (RGBA_8888 = 4 байта на пиксель)
+            val requiredCapacity = bitmap.width * bitmap.height * 4
+
+            // Создаем буфер только один раз (или если размер экрана изменился)
+            if (sharedBuffer == null || sharedBuffer!!.capacity() < requiredCapacity) {
+                Log.d(TAG, "Allocating new ByteBuffer of size: $requiredCapacity")
+                sharedBuffer = ByteBuffer.allocateDirect(requiredCapacity)
             }
+
+            val buffer = sharedBuffer!!
+            buffer.clear() // Сбрасываем позицию буфера к 0
             
-            // Конвертируем JPEG в RGB для FFI
-            val bitmap = BitmapFactory.decodeByteArray(result.data, 0, result.data.size)
-            
-            if (bitmap == null) {
-                Log.e(TAG, "Failed to decode JPEG")
-                return
-            }
-            
-            // Конвертируем в ByteBuffer для FFI.onVideoFrameUpdate()
-            val buffer = bitmapToRGBABuffer(bitmap)
-            
+            // Копируем пиксели напрямую из Bitmap в ByteBuffer
+            bitmap.copyPixelsToBuffer(buffer)
+            buffer.rewind() // Сбрасываем позицию перед чтением в Rust
+
             // Отправляем в Rust ТАК ЖЕ как MediaProjection!
-            // Rust не знает что это XML capture!
             FFI.onVideoFrameUpdate(buffer)
-            
+
+            // Освобождаем память Bitmap, так как данные уже в буфере
             bitmap.recycle()
-            
-            val elapsed = System.currentTimeMillis() - startTime
-            if (elapsed > 100) {
-                Log.d(TAG, "Slow frame: ${elapsed}ms")
-            }
-            
+
         } catch (e: Exception) {
             Log.e(TAG, "Capture error", e)
         }
     }
-    
-    /**
-     * Конвертирует Bitmap в RGBA ByteBuffer для FFI
-     */
-    private fun bitmapToRGBABuffer(bitmap: Bitmap): ByteBuffer {
-        val width = bitmap.width
-        val height = bitmap.height
-        
-        // Создаем buffer того же формата что ImageReader
-        val buffer = ByteBuffer.allocateDirect(width * height * 4)
-        
-        // Копируем пиксели
-        bitmap.copyPixelsToBuffer(buffer)
-        buffer.rewind()
-        
-        return buffer
-    }
 }
+

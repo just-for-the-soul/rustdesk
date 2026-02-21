@@ -410,58 +410,66 @@ class MainService : Service() {
         return audioRecordHandle.onVoiceCallClosed(mediaProjection)
     }
 
+
     private fun selectCaptureMethod(): CaptureMethod {
-	    if (mediaProjection != null) {
-		    Log.i(logTag, "Using MediaProjection (30-60 FPS)")
-		    return CaptureMethod.MEDIA_PROJECTION
-	    }
+        if (mediaProjection != null) {
+            Log.i(logTag, "Using MediaProjection (30-60 FPS)")
+            return CaptureMethod.MEDIA_PROJECTION
+        }
 
-	    if (InputService.isOpen) {
-		    Log.i(logTag, "Using XML Accessibility (12-16 FPS, NO INDICATOR)")
-		    return CaptureMethod.XML_ACCESSIBILITY
-	    }
+        if (InputService.isOpen) {
+            Log.i(logTag, "Using XML Accessibility (12-16 FPS, NO INDICATOR)")
+            return CaptureMethod.XML_ACCESSIBILITY
+        }
 
-	    return CaptureMethod.MEDIA_PROJECTION
+        return CaptureMethod.MEDIA_PROJECTION
     }
+
+
 
     private fun startXmlCapture(): Boolean {
-	    Log.d(logTag, "Start XML Capture")
+        Log.d(logTag, "Start XML Capture")
 
-	    if (!InputService.isOpen) {
-		    Log.e(logTag, "InputService not available")
-		    return false
-	    }
+        if (!InputService.isOpen) {
+            Log.e(logTag, "InputService not available")
+            return false
+        }
 
-	    xmlScreenCapture = XmlScreenCapture()
-	    xmlScreenCapture?.start()
+        // ВАЖНО: Обновляем инфу об экране, чтобы Rust знал размер ожидаемого буфера
+        updateScreenInfo(resources.configuration.orientation)
 
-	    _isStart = true
-	    FFI.setFrameRawEnable("video", true)
-	    MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
+        xmlScreenCapture = XmlScreenCapture()
+        xmlScreenCapture?.start()
 
-	    return true
+        _isStart = true
+        // Говорим ядру RustDesk, что сейчас пойдут сырые кадры (Raw Frames)
+        FFI.setFrameRawEnable("video", true)
+        MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
+
+        return true
     }
+
 
     fun startCapture(): Boolean {
         if (isStart) {
             return true
         }
 
+        currentCaptureMethod = selectCaptureMethod()
 
-	currentCaptureMethod = selectCaptureMethod()
+        // Если выбрали XML, идем по новому пути
+        if (currentCaptureMethod == CaptureMethod.XML_ACCESSIBILITY) {
+            return startXmlCapture()
+        }
 
-	if (currentCaptureMethod == CaptureMethod.XML_ACCESSIBILITY) {
-		return startXmlCapture()
-	}
-
-
+        // --- Стандартная логика MediaProjection ---
         if (mediaProjection == null) {
-            Log.w(logTag, "startCapture fail,mediaProjection is null")
+            Log.w(logTag, "startCapture fail, mediaProjection is null")
             return false
         }
-        
+
         updateScreenInfo(resources.configuration.orientation)
-        Log.d(logTag, "Start Capture")
+        Log.d(logTag, "Start Capture via MediaProjection")
         surface = createSurface()
 
         if (useVP9) {
@@ -485,29 +493,28 @@ class MainService : Service() {
         return true
     }
 
+
     @Synchronized
     fun stopCapture() {
         Log.d(logTag, "Stop Capture")
-        FFI.setFrameRawEnable("video",false)
+        FFI.setFrameRawEnable("video", false)
         _isStart = false
         MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
 
-	if (currentCaptureMethod == CaptureMethod.XML_ACCESSIBILITY) {
-		xmlScreenCapture?.stop()
-		xmlScreenCapture = null
-		return
-	}
-        // release video
+        // Если работал XML-захват, просто останавливаем его и выходим
+        if (currentCaptureMethod == CaptureMethod.XML_ACCESSIBILITY) {
+            xmlScreenCapture?.stop()
+            xmlScreenCapture = null
+            return
+        }
+
+        // --- Стандартная очистка MediaProjection ---
         if (reuseVirtualDisplay) {
-            // The virtual display video projection can be paused by calling `setSurface(null)`.
-            // https://developer.android.com/reference/android/hardware/display/VirtualDisplay.Callback
-            // https://learn.microsoft.com/en-us/dotnet/api/android.hardware.display.virtualdisplay.callback.onpaused?view=net-android-34.0
             virtualDisplay?.setSurface(null)
         } else {
             virtualDisplay?.release()
         }
-        // suface needs to be release after `imageReader.close()` to imageReader access released surface
-        // https://github.com/rustdesk/rustdesk/issues/4118#issuecomment-1515666629
+
         imageReader?.close()
         imageReader = null
         videoEncoder?.let {
@@ -519,14 +526,13 @@ class MainService : Service() {
             virtualDisplay = null
         }
         videoEncoder = null
-        // suface needs to be release after `imageReader.close()` to imageReader access released surface
-        // https://github.com/rustdesk/rustdesk/issues/4118#issuecomment-1515666629
         surface?.release()
 
         // release audio
         _isAudioStart = false
         audioRecordHandle.tryReleaseAudio()
     }
+
 
     fun destroy() {
         Log.d(logTag, "destroy service")
