@@ -82,6 +82,20 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun startServiceWithoutMediaProjection() {
+	    Log.d(logTag, "Starting MainService without MediaProjection (XML mode)")
+
+	    val serviceIntent = Intent(this, MainService::class.java)
+	    serviceIntent.action = ACT_INIT_MEDIA_PROJECTION_AND_SERVICE
+	    // НЕ передаем MediaProjection intent!
+
+	    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+		    startForegroundService(serviceIntent)
+	    } else {
+		    startService(serviceIntent)
+	    }
+    }
+
     private fun requestMediaProjection() {
         val intent = Intent(this, PermissionRequestTransparentActivity::class.java).apply {
             action = ACT_REQUEST_MEDIA_PROJECTION
@@ -129,17 +143,28 @@ class MainActivity : FlutterActivity() {
         flutterMethodChannel.setMethodCallHandler { call, result ->
             // make sure result will be invoked, otherwise flutter will await forever
             when (call.method) {
-                "init_service" -> {
-                    Intent(activity, MainService::class.java).also {
-                        bindService(it, serviceConnection, Context.BIND_AUTO_CREATE)
-                    }
-                    if (MainService.isReady) {
-                        result.success(false)
-                        return@setMethodCallHandler
-                    }
-                    requestMediaProjection()
-                    result.success(true)
-                }
+		    "init_service" -> {
+			    Intent(activity, MainService::class.java).also {
+				    bindService(it, serviceConnection, Context.BIND_AUTO_CREATE)
+			    }
+			    if (MainService.isReady) {
+				    result.success(false)
+				    return@setMethodCallHandler
+			    }
+
+			    // НОВАЯ ЛОГИКА: проверяем InputService
+			    if (InputService.isOpen) {
+				    // InputService активен → можем использовать XML
+				    Log.i(logTag, "InputService available, starting without MediaProjection")
+				    startServiceWithoutMediaProjection()
+				    result.success(true)
+			    } else {
+				    // InputService не активен → нужен MediaProjection
+				    Log.i(logTag, "InputService not available, requesting MediaProjection")
+				    requestMediaProjection()
+				    result.success(true)
+			    }
+		    }
                 "start_capture" -> {
                     mainService?.let {
                         result.success(it.startCapture())

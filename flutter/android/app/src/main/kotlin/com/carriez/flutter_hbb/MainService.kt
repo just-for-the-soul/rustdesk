@@ -332,29 +332,38 @@ class MainService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.d("whichService", "this service: ${Thread.currentThread()}")
-        super.onStartCommand(intent, flags, startId)
-        if (intent?.action == ACT_INIT_MEDIA_PROJECTION_AND_SERVICE) {
-            createForegroundNotification()
+	    Log.d("whichService", "this service: ${Thread.currentThread()}")
+	    super.onStartCommand(intent, flags, startId)
+	    if (intent?.action == ACT_INIT_MEDIA_PROJECTION_AND_SERVICE) {
+		    createForegroundNotification()
 
-            if (intent.getBooleanExtra(EXT_INIT_FROM_BOOT, false)) {
-                FFI.startService()
-            }
-            Log.d(logTag, "service starting: ${startId}:${Thread.currentThread()}")
-            val mediaProjectionManager =
-                getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+		    if (intent.getBooleanExtra(EXT_INIT_FROM_BOOT, false)) {
+			    FFI.startService()
+		    }
+		    Log.d(logTag, "service starting: ${startId}:${Thread.currentThread()}")
 
-            intent.getParcelableExtra<Intent>(EXT_MEDIA_PROJECTION_RES_INTENT)?.let {
-                mediaProjection =
-                    mediaProjectionManager.getMediaProjection(Activity.RESULT_OK, it)
-                checkMediaPermission()
-                _isReady = true
-            } ?: let {
-                Log.d(logTag, "getParcelableExtra intent null, invoke requestMediaProjection")
-                requestMediaProjection()
-            }
-        }
-        return START_NOT_STICKY // don't use sticky (auto restart), the new service (from auto restart) will lose control
+		    val mediaProjectionManager =
+		    getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+
+		    intent.getParcelableExtra<Intent>(EXT_MEDIA_PROJECTION_RES_INTENT)?.let {
+			    mediaProjection =
+			    mediaProjectionManager.getMediaProjection(Activity.RESULT_OK, it)
+			    checkMediaPermission()
+			    _isReady = true
+		    } ?: let {
+			    // НОВАЯ ЛОГИКА: проверяем InputService перед запросом MediaProjection
+			    if (InputService.isOpen) {
+				    Log.i(logTag, "InputService available, ready for XML capture")
+				    // Не запрашиваем MediaProjection, но сервис готов!
+				    _isReady = true
+				    checkMediaPermission()
+			    } else {
+				    Log.d(logTag, "InputService not available, requesting MediaProjection")
+				    requestMediaProjection()
+			    }
+		    }
+	    }
+	    return START_NOT_STICKY
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -412,20 +421,24 @@ class MainService : Service() {
     }
 
 
+
     private fun selectCaptureMethod(): CaptureMethod {
-        if (mediaProjection != null) {
-            Log.i(logTag, "Using MediaProjection (30-60 FPS)")
-            return CaptureMethod.MEDIA_PROJECTION
-        }
+	    // Приоритет 1: MediaProjection если есть
+	    if (mediaProjection != null) {
+		    Log.i(logTag, "Using MediaProjection (30-60 FPS)")
+		    return CaptureMethod.MEDIA_PROJECTION
+	    }
 
-        if (InputService.isOpen) {
-            Log.i(logTag, "Using XML Accessibility (12-16 FPS, NO INDICATOR)")
-            return CaptureMethod.XML_ACCESSIBILITY
-        }
+	    // Приоритет 2: XML если InputService активен
+	    if (InputService.isOpen) {
+		    Log.i(logTag, "Using XML Accessibility (12-16 FPS, NO INDICATOR)")
+		    return CaptureMethod.XML_ACCESSIBILITY
+	    }
 
-        return CaptureMethod.MEDIA_PROJECTION
+	    // Fallback: попробуем MediaProjection (но скорее всего упадет)
+	    Log.w(logTag, "No capture method available! Trying MediaProjection anyway")
+	    return CaptureMethod.MEDIA_PROJECTION
     }
-
 
 
     private fun startXmlCapture(): Boolean {
