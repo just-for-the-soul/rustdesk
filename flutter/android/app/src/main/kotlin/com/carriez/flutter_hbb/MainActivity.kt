@@ -222,17 +222,18 @@ class MainActivity : FlutterActivity() {
                     )
                     result.success(true)
                 }
-                "stop_input" -> {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                        InputService.ctx?.disableSelf()
-                    }
-                    InputService.ctx = null
-                    Companion.flutterMethodChannel?.invokeMethod(
-                        "on_state_changed",
-                        mapOf("name" to "input", "value" to InputService.isOpen.toString())
-                    )
-                    result.success(true)
-                }
+		"stop_input" -> {
+			// ИЗМЕНЕНИЕ: НЕ вызываем disableSelf()
+			// Просто обнуляем ctx - события перестанут обрабатываться,
+			// но Accessibility останется включенным для XML capture
+			InputService.ctx = null
+
+			Companion.flutterMethodChannel?.invokeMethod(
+				"on_state_changed",
+				mapOf("name" to "input", "value" to InputService.isOpen.toString())
+			)
+			result.success(true)
+		}
                 "cancel_notification" -> {
                     if (call.arguments is Int) {
                         val id = call.arguments as Int
