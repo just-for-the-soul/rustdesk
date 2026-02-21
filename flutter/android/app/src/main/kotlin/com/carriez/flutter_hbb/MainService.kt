@@ -211,7 +211,8 @@ class MainService : Service() {
 	    XML_ACCESSIBILITY
     }
 
-    private var currentCaptureMethod = CaptureMethod.MEDIA_PROJECTION                                   private var xmlScreenCapture: XmlScreenCapture? = null
+    private var currentCaptureMethod = CaptureMethod.MEDIA_PROJECTION
+    private var xmlScreenCapture: XmlScreenCapture? = null
 
     private val logTag = "LOG_SERVICE"
     private val useVP9 = false
