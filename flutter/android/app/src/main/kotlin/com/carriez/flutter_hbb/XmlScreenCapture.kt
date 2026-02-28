@@ -14,6 +14,9 @@ import java.nio.ByteBuffer
 class XmlScreenCapture {
     private val TAG = "XmlScreenCapture"
 
+    var smartSwitch: SmartCaptureSwitch? = null
+
+
     private var captureThread: HandlerThread? = null
     private var captureHandler: Handler? = null
     private var isRunning = false
@@ -102,6 +105,7 @@ class XmlScreenCapture {
             FFI.onVideoFrameUpdate(buffer)
 
             // Освобождаем память Bitmap, так как данные уже в буфере
+	    smartSwitch?.analyzeXmlFrame(bitmap)
             bitmap.recycle()
 
         } catch (e: Exception) {

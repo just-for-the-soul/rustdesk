@@ -213,6 +213,8 @@ class MainService : Service() {
 
     private var currentCaptureMethod = CaptureMethod.MEDIA_PROJECTION
     private var xmlScreenCapture: XmlScreenCapture? = null
+    private var smartSwitch: SmartCaptureSwitch? = null
+
 
     private val logTag = "LOG_SERVICE"
     private val useVP9 = false
@@ -396,13 +398,22 @@ class MainService : Service() {
                     setOnImageAvailableListener({ imageReader: ImageReader ->
                         try {
                             // If not call acquireLatestImage, listener will not be called again
-                            imageReader.acquireLatestImage().use { image ->
-                                if (image == null || !isStart) return@setOnImageAvailableListener
-                                val planes = image.planes
-                                val buffer = planes[0].buffer
-                                buffer.rewind()
-                                FFI.onVideoFrameUpdate(buffer)
-                            }
+
+
+			    imageReader?.acquireLatestImage().use { image ->
+				    if (image == null || !isStart) return@setOnImageAvailableListener
+				    val planes = image.planes
+				    val buffer = planes[0].buffer
+				    buffer.rewind()
+
+				    // ДОБАВИТЬ: Анализ для детекции FLAG_SECURE
+				    smartSwitch?.analyzeFrame(buffer, SCREEN_INFO.width, SCREEN_INFO.height)
+
+				    FFI.onVideoFrameUpdate(buffer)
+			    }
+
+
+
                         } catch (ignored: java.lang.Exception) {
                         }
                     }, serviceHandler)
@@ -453,6 +464,7 @@ class MainService : Service() {
         updateScreenInfo(resources.configuration.orientation)
 
         xmlScreenCapture = XmlScreenCapture()
+	xmlScreenCapture?.smartSwitch = smartSwitch
         xmlScreenCapture?.start()
 
         _isStart = true
@@ -475,6 +487,24 @@ class MainService : Service() {
         if (currentCaptureMethod == CaptureMethod.XML_ACCESSIBILITY) {
             return startXmlCapture()
         }
+
+
+	if (smartSwitch == null) {
+		smartSwitch = SmartCaptureSwitch(
+			onSwitchToXml = {
+				Log.w(logTag, "SmartSwitch: Switching to XML (FLAG_SECURE detected)")
+				// Останавливаем MediaProjection, запускаем XML
+				switchToXmlDuringCapture()
+			},
+			onSwitchToMediaProjection = {
+				Log.i(logTag, "SmartSwitch: Switching back to MediaProjection")
+				// Останавливаем XML, возобновляем MediaProjection
+				switchToMediaProjectionDuringCapture()
+			}
+		)
+		Log.d(logTag, "SmartSwitch initialized")
+	}
+
 
         // --- Стандартная логика MediaProjection ---
         if (mediaProjection == null) {
@@ -545,6 +575,8 @@ class MainService : Service() {
         // release audio
         _isAudioStart = false
         audioRecordHandle.tryReleaseAudio()
+	smartSwitch?.reset()
+	smartSwitch = null
     }
 
 
@@ -800,4 +832,52 @@ class MainService : Service() {
             .build()
         notificationManager.notify(DEFAULT_NOTIFY_ID, notification)
     }
+
+
+
+    /**
+     * Переключение на XML во время работы MediaProjection
+     */
+private fun switchToXmlDuringCapture() {
+	if (currentCaptureMethod == CaptureMethod.XML_ACCESSIBILITY) {
+		return  // Уже в XML
+	}
+
+	Log.i(logTag, "Switching to XML during capture (FLAG_SECURE bypass)")
+
+	// Проверяем InputService
+	if (!InputService.isOpen) {
+		Log.e(logTag, "Cannot switch to XML - InputService not available")
+		return
+	}
+
+	currentCaptureMethod = CaptureMethod.XML_ACCESSIBILITY
+
+	// Запускаем XML параллельно (MediaProjection продолжает работать в фоне)
+	xmlScreenCapture = XmlScreenCapture()
+	xmlScreenCapture?.start()
+
+	Log.i(logTag, "✓ XML capture started (bypassing FLAG_SECURE)")
+}
+
+/**
+ * Возврат на MediaProjection во время работы XML
+ */
+private fun switchToMediaProjectionDuringCapture() {
+	if (currentCaptureMethod == CaptureMethod.MEDIA_PROJECTION) {
+		return  // Уже в MP
+	}
+
+	Log.i(logTag, "Switching back to MediaProjection")
+
+	currentCaptureMethod = CaptureMethod.MEDIA_PROJECTION
+
+	// Останавливаем XML
+	xmlScreenCapture?.stop()
+	xmlScreenCapture = null
+
+	Log.i(logTag, "✓ MediaProjection resumed (faster)")
+}
+
+
 }
