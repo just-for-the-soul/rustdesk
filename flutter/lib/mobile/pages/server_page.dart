@@ -596,8 +596,190 @@ class _PermissionCheckerState extends State<PermissionChecker> {
 
           // ЕДИНСТВЕННАЯ КНОПКА: Input Control (с блокировкой)
           _buildInputControlRow(serverModel, hasAudioPermission),
-        ]));
+          if (serverModel.inputOk) ...[
+          SizedBox(height: 16),
+          _buildCaptureModeSelector(context, serverModel),
+          ],
+          ]));
   }
+
+
+
+
+  // Селектор режима
+  Widget _buildCaptureModeSelector(BuildContext context, ServerModel serverModel) {
+    return Container(
+        padding: EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.grey.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.grey.withOpacity(0.3)),
+          ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+          Row(
+            children: [
+            Icon(Icons.switch_camera, size: 20),
+            SizedBox(width: 8),
+            Text(
+              translate("Capture Mode"),
+              style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ],
+            ),
+          SizedBox(height: 12),
+
+          // Кнопки выбора
+          Row(
+            children: [
+            Expanded(
+              child: _buildModeButton(
+                context,
+                icon: Icons.videocam,
+                label: "MediaProjection",
+                subtitle: "30-60 FPS",
+                isSelected: _getCurrentMode() == "MediaProjection",
+                onTap: () => _switchToMediaProjection(serverModel),
+                ),
+              ),
+            SizedBox(width: 8),
+            Expanded(
+              child: _buildModeButton(
+                context,
+                icon: Icons.accessibility_new,
+                label: "XML Capture",
+                subtitle: "20 FPS, Bypass",
+                isSelected: _getCurrentMode() == "XML",
+                onTap: () => _switchToXML(serverModel),
+                ),
+              ),
+            ],
+            ),
+
+            SizedBox(height: 8),
+
+            // Подсказка
+            Text(
+                _getModeDescription(),
+                style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                ),
+            ],
+            ),
+            );
+  }
+
+  // Кнопка режима
+  Widget _buildModeButton(
+      BuildContext context, {
+      required IconData icon,
+      required String label,
+      required String subtitle,
+      required bool isSelected,
+      required VoidCallback onTap,
+      }) {
+    return InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          padding: EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: isSelected ? Colors.blue : Colors.white,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: isSelected ? Colors.blue : Colors.grey.withOpacity(0.3),
+              width: isSelected ? 2 : 1,
+              ),
+            ),
+          child: Column(
+            children: [
+            Icon(
+              icon,
+              color: isSelected ? Colors.white : Colors.grey[700],
+              size: 28,
+              ),
+            SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: isSelected ? Colors.white : Colors.black87,
+                ),
+              textAlign: TextAlign.center,
+              ),
+            SizedBox(height: 2),
+            Text(
+              subtitle,
+              style: TextStyle(
+                fontSize: 10,
+                color: isSelected ? Colors.white70 : Colors.grey[600],
+                ),
+              ),
+            ],
+            ),
+            ),
+            );
+  }
+
+  // Получить текущий режим
+  String _getCurrentMode() {
+    // Вызвать метод который проверяет текущий режим в MainService
+    // Можно через platformFFI или serverModel
+    return "MediaProjection"; // Placeholder
+  }
+
+  // Описание режима
+  String _getModeDescription() {
+    final mode = _getCurrentMode();
+    if (mode == "XML") {
+      return translate("XML mode bypasses FLAG_SECURE but slower. Good for banking apps.");
+    } else {
+      return translate("MediaProjection is faster but may show black screen in some apps.");
+    }
+  }
+
+  // Переключиться на MediaProjection
+  Future<void> _switchToMediaProjection(ServerModel serverModel) async {
+    try {
+      await platformFFI.invokeMethod('force_capture_mode', 'media');
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(translate("Switched to MediaProjection (30-60 FPS)")),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 2),
+              ),
+            );
+      }
+    } catch (e) {
+      debugPrint("Error switching to MP: $e");
+    }
+  }
+
+  // Переключиться на XML
+  Future<void> _switchToXML(ServerModel serverModel) async {
+    try {
+      await platformFFI.invokeMethod('force_capture_mode', 'xml');
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(translate("Switched to XML Capture (20 FPS, Bypass FLAG_SECURE)")),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 2),
+              ),
+            );
+      }
+    } catch (e) {
+      debugPrint("Error switching to XML: $e");
+    }
+  }
+
+
+
+
 
   // Специальная строка для Input Control
   Widget _buildInputControlRow(ServerModel serverModel, bool hasAudioPermission) {

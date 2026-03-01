@@ -167,6 +167,43 @@ class MainActivity : FlutterActivity() {
 		    }
 
 
+
+        "force_capture_mode" -> {
+          val mode = call.arguments as? String
+          Log.d(logTag, "Force switching capture mode to: $mode")
+
+          when (mode) {
+            "media" -> {
+              // Переключить на MediaProjection
+              mainService?.smartSwitch?.forceSwitch(
+                SmartCaptureSwitch.CaptureMode.MEDIA_PROJECTION
+              )
+            }
+            "xml" -> {
+              // Переключить на XML
+              mainService?.smartSwitch?.forceSwitch(
+                SmartCaptureSwitch.CaptureMode.XML_FALLBACK
+              )
+            }
+          }
+
+          result.success(true)
+        }
+
+        "get_capture_mode" -> {
+          val mode = mainService?.smartSwitch?.getCurrentMode()
+          val modeString = when (mode) {
+            SmartCaptureSwitch.CaptureMode.MEDIA_PROJECTION -> "MediaProjection"
+            SmartCaptureSwitch.CaptureMode.XML_FALLBACK -> "XML"
+            null -> "Unknown"
+          }
+          result.success(modeString)
+        }
+
+
+
+
+
         "open_accessibility_settings" -> {
           Log.d(logTag, "Opening Accessibility Settings ONLY (no other permissions)")
 
