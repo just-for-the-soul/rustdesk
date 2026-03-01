@@ -65,6 +65,11 @@ class FloatingWindowService : Service(), View.OnTouchListener {
 
     override fun onCreate() {
         super.onCreate()
+
+        Log.d(logTag, "FloatingWindow disabled to prevent overlay detection")
+        stopSelf()
+        return
+
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         try {
             if (firstCreate) {
