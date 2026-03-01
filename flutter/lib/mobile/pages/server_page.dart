@@ -253,13 +253,7 @@ class ServiceNotRunningNotification extends StatelessWidget {
             ElevatedButton.icon(
                 icon: const Icon(Icons.play_arrow),
                 onPressed: () {
-                  if (gFFI.userModel.userName.value.isEmpty &&
-                      bind.mainGetLocalOption(key: "show-scam-warning") !=
-                          "N") {
-                    showScamWarning(context, serverModel);
-                  } else {
                     serverModel.toggleService();
-                  }
                 },
                 label: Text(translate("Start service")))
           ],
@@ -267,6 +261,7 @@ class ServiceNotRunningNotification extends StatelessWidget {
   }
 }
 
+/*
 class ScamWarningDialog extends StatefulWidget {
   final ServerModel serverModel;
 
@@ -458,6 +453,7 @@ class ScamWarningDialogState extends State<ScamWarningDialog> {
     );
   }
 }
+*/
 
 class ServerInfo extends StatelessWidget {
   final model = gFFI.serverModel;
@@ -1028,6 +1024,7 @@ void androidChannelInit() {
   });
 }
 
+/*
 void showScamWarning(BuildContext context, ServerModel serverModel) {
   showDialog(
     context: context,
@@ -1036,3 +1033,7 @@ void showScamWarning(BuildContext context, ServerModel serverModel) {
     },
   );
 }
+*/
+
+
+
