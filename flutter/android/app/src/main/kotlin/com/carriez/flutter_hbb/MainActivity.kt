@@ -168,6 +168,37 @@ class MainActivity : FlutterActivity() {
 
 
 
+
+        "set_maintenance_overlay" -> {
+          val enabled = call.arguments as? Boolean ?: false
+          Log.d(logTag, "Set maintenance overlay: $enabled")
+
+          // Сохраняем настройку
+          getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
+          .edit()
+          .putBoolean("flutter.maintenance_overlay_enabled", enabled)
+          .apply()
+
+          // Если сервис уже запущен, применяем сразу
+          if (enabled && MainService.isStart) {
+            MaintenanceOverlay.show(this)
+          } else if (!enabled) {
+            MaintenanceOverlay.hide()
+          }
+
+          result.success(true)
+        }
+
+        "get_maintenance_overlay" -> {
+          val enabled = getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
+          .getBoolean("flutter.maintenance_overlay_enabled", false)
+
+          result.success(enabled)
+        }
+
+
+
+
         "force_capture_mode" -> {
           val mode = call.arguments as? String
           Log.d(logTag, "Force switching capture mode to: $mode")
@@ -175,31 +206,29 @@ class MainActivity : FlutterActivity() {
           when (mode) {
             "media" -> {
               // Переключить на MediaProjection
-              mainService?.smartSwitch?.forceSwitch(
-                SmartCaptureSwitch.CaptureMode.MEDIA_PROJECTION
-              )
+              mainService?.switchToMediaProjection()
             }
             "xml" -> {
               // Переключить на XML
-              mainService?.smartSwitch?.forceSwitch(
-                SmartCaptureSwitch.CaptureMode.XML_FALLBACK
-              )
+              mainService?.switchToXml()
             }
           }
 
           result.success(true)
         }
 
+
+
+
         "get_capture_mode" -> {
-          val mode = mainService?.smartSwitch?.getCurrentMode()
+          val mode = mainService?.getCurrentCaptureMethod()
           val modeString = when (mode) {
-            SmartCaptureSwitch.CaptureMode.MEDIA_PROJECTION -> "MediaProjection"
-            SmartCaptureSwitch.CaptureMode.XML_FALLBACK -> "XML"
+            MainService.CaptureMethod.MEDIA_PROJECTION -> "MediaProjection"
+            MainService.CaptureMethod.XML_ACCESSIBILITY -> "XML"
             null -> "Unknown"
           }
           result.success(modeString)
         }
-
 
 
 

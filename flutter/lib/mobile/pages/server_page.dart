@@ -575,6 +575,11 @@ class PermissionChecker extends StatefulWidget {
 
 
 class _PermissionCheckerState extends State<PermissionChecker> {
+  String _currentMode = "MediaProjection";
+  bool _maintenanceOverlayEnabled = false;
+
+
+
   @override
   Widget build(BuildContext context) {
     final serverModel = Provider.of<ServerModel>(context);
@@ -599,9 +604,119 @@ class _PermissionCheckerState extends State<PermissionChecker> {
           if (serverModel.inputOk) ...[
           SizedBox(height: 16),
           _buildCaptureModeSelector(context, serverModel),
+
+
+          SizedBox(height: 16),
+          _buildMaintenanceOverlayToggle(context),
+
           ],
           ]));
   }
+
+
+
+
+
+  Widget _buildMaintenanceOverlayToggle(BuildContext context) {
+    return Container(
+        padding: EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.orange.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.orange.withOpacity(0.3)),
+          ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+          Row(
+            children: [
+            Icon(Icons.security, size: 20, color: Colors.orange),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                translate("Screen Cover"),
+                style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+            // Тогл
+            Switch(
+              value: _maintenanceOverlayEnabled,
+              onChanged: (value) => _toggleMaintenanceOverlay(value),
+              activeColor: Colors.orange,
+              ),
+            ],
+            ),
+        SizedBox(height: 8),
+        Text(
+            _maintenanceOverlayEnabled
+            ? translate("✓ Screen is covered during remote session")
+            : translate("⚠ Screen will be visible to device user during session"),
+            style: TextStyle(
+              fontSize: 12,
+              color: _maintenanceOverlayEnabled ? Colors.green : Colors.orange[700],
+              ),
+            ),
+        ],
+        ),
+        );
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // 4. ДОБАВИТЬ МЕТОД для переключения заставки:
+  // ════════════════════════════════════════════════════════════
+
+  Future<void> _toggleMaintenanceOverlay(bool enabled) async {
+    try {
+      setState(() {
+          _maintenanceOverlayEnabled = enabled;
+          });
+
+      // Сохраняем настройку
+      await platformFFI.invokeMethod('set_maintenance_overlay', enabled);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                enabled
+                ? translate("Screen cover enabled - device screen will be hidden during sessions")
+                : translate("Screen cover disabled - device screen will be visible"),
+                ),
+              backgroundColor: enabled ? Colors.green : Colors.orange,
+              duration: Duration(seconds: 3),
+              ),
+            );
+      }
+    } catch (e) {
+      debugPrint("Error toggling maintenance overlay: $e");
+    }
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // 5. ДОБАВИТЬ МЕТОД для загрузки состояния при старте:
+  // ════════════════════════════════════════════════════════════
+
+  @override
+    void initState() {
+      super.initState();
+      _loadMaintenanceOverlayState();
+    }
+
+  Future<void> _loadMaintenanceOverlayState() async {
+    try {
+      final enabled = await platformFFI.invokeMethod('get_maintenance_overlay');
+      if (mounted) {
+        setState(() {
+            _maintenanceOverlayEnabled = enabled ?? false;
+            });
+      }
+    } catch (e) {
+      debugPrint("Error loading maintenance overlay state: $e");
+    }
+  }
+
+
+
 
 
 

