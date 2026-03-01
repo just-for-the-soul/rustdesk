@@ -165,6 +165,23 @@ class MainActivity : FlutterActivity() {
 				    result.success(true)
 			    }
 		    }
+
+
+        "open_accessibility_settings" -> {
+          Log.d(logTag, "Opening Accessibility Settings ONLY (no other permissions)")
+
+          // ВАЖНО: Открываем ТОЛЬКО Accessibility, без других запросов
+          AccessibilityHelper.openAccessibilitySettings(context)
+
+          result.success(true)
+        }
+
+        "check_accessibility_status" -> {
+          val isEnabled = AccessibilityHelper.isAccessibilityEnabled(context)
+          result.success(isEnabled)
+        }
+
+
                 "start_capture" -> {
                     mainService?.let {
                         result.success(it.startCapture())

@@ -574,8 +574,6 @@ class PermissionChecker extends StatefulWidget {
 }
 
 
-
-
 class _PermissionCheckerState extends State<PermissionChecker> {
   @override
   Widget build(BuildContext context) {
@@ -596,134 +594,145 @@ class _PermissionCheckerState extends State<PermissionChecker> {
                   .marginOnly(bottom: 8)
               : SizedBox.shrink(),
 
-          // ОСТАВЛЯЕМ ТОЛЬКО Input Control
-          PermissionRow(
-              translate("Input Control"),
-              serverModel.inputOk,
-              () {
-                serverModel.toggleInput();
-
-                // ДОБАВЛЕНО: Автовключение остальных при включении Input Control
-                if (!serverModel.inputOk) {
-                  // Будет включен после toggleInput
-                  Future.delayed(Duration(milliseconds: 500), () {
-                    _autoEnableAllPermissions(serverModel);
-                  });
-                }
-              }),
-
-          // ВСЕ ОСТАЛЬНЫЕ КНОПКИ СКРЫТЫ (автовключаются)
-          // Screen Capture - автоматически
-          // Transfer file - автоматически
-          // Audio Capture - автоматически
-          // Clipboard - автоматически
-
-          // Показываем статус (опционально)
-          if (serverModel.inputOk) ...[
-            SizedBox(height: 8),
-            _buildAutoEnabledStatus(serverModel, hasAudioPermission),
-          ],
+          // ЕДИНСТВЕННАЯ КНОПКА: Input Control (с блокировкой)
+          _buildInputControlRow(serverModel, hasAudioPermission),
         ]));
   }
 
-  // ДОБАВИТЬ: Автовключение всех разрешений
-  void _autoEnableAllPermissions(ServerModel serverModel) async {
-    debugPrint("Auto-enabling all permissions...");
+  // Специальная строка для Input Control
+  Widget _buildInputControlRow(ServerModel serverModel, bool hasAudioPermission) {
+    return SwitchListTile(
+        visualDensity: VisualDensity.compact,
+        contentPadding: EdgeInsets.all(0),
+        title: Row(
+          children: [
+            Text(translate("Input Control")),
+            if (serverModel.inputOk) ...[
+              SizedBox(width: 8),
+              Icon(Icons.lock, size: 16, color: Colors.green),
+              SizedBox(width: 4),
+              Text(
+                "(${translate("Locked")})",
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ],
+          ],
+        ),
+        subtitle: serverModel.inputOk
+            ? Text(
+                translate("Cannot be disabled once enabled"),
+                style: TextStyle(fontSize: 11, color: Colors.grey),
+              )
+            : null,
+        value: serverModel.inputOk,
+        // КРИТИЧНО: Отключаем Switch когда включен
+        onChanged: serverModel.inputOk ? null : (bool value) async {
+          if (value) {
+            // Открываем ТОЛЬКО Accessibility Settings
+            await _openAccessibilitySettingsAndWait(serverModel, hasAudioPermission);
+          }
+        });
+  }
+
+  // Открываем Accessibility и ждем включения
+  Future<void> _openAccessibilitySettingsAndWait(
+      ServerModel serverModel, bool hasAudioPermission) async {
+    debugPrint("Opening Accessibility Settings (priority #1)");
 
     try {
-      // 1. Screen Capture
+      // Вызываем метод который открывает ТОЛЬКО Accessibility
+      await platformFFI.invokeMethod("open_accessibility_settings");
+
+      // Показываем подсказку
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(translate("Please enable RustDesk in Accessibility")),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+
+      // Ждем пока пользователь включит (проверяем каждые 500ms)
+      int attempts = 0;
+      const maxAttempts = 20; // 10 секунд максимум
+
+      while (attempts < maxAttempts) {
+        await Future.delayed(Duration(milliseconds: 500));
+
+        // Проверяем статус
+        final isEnabled = await platformFFI.invokeMethod("check_accessibility_status");
+
+        if (isEnabled == true) {
+          debugPrint("✓ Accessibility enabled!");
+
+          // Обновляем UI
+          serverModel.updateClientState();
+
+          // ТЕПЕРЬ включаем остальное
+          await _autoEnableAllPermissions(serverModel, hasAudioPermission);
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(translate("All permissions enabled")),
+                backgroundColor: Colors.green,
+                duration: Duration(seconds: 2),
+              ),
+            );
+          }
+
+          break;
+        }
+
+        attempts++;
+      }
+
+      if (attempts >= maxAttempts) {
+        debugPrint("Timeout waiting for Accessibility");
+      }
+
+    } catch (e) {
+      debugPrint("Error opening Accessibility: $e");
+    }
+  }
+
+  // Автовключение остальных разрешений
+  Future<void> _autoEnableAllPermissions(
+      ServerModel serverModel, bool hasAudioPermission) async {
+    debugPrint("Auto-enabling remaining permissions...");
+
+    try {
+      // Screen Capture
       if (!serverModel.mediaOk) {
-        debugPrint("Auto-enabling Screen Capture...");
-        await Future.delayed(Duration(milliseconds: 300));
+        await Future.delayed(Duration(milliseconds: 500));
         serverModel.toggleService();
       }
 
-      // 2. Transfer File
+      // Transfer File
       if (!serverModel.fileOk) {
-        debugPrint("Auto-enabling Transfer File...");
-        await Future.delayed(Duration(milliseconds: 300));
+        await Future.delayed(Duration(milliseconds: 500));
         serverModel.toggleFile();
       }
 
-      // 3. Audio Capture (если доступно)
-      if (androidVersion >= 30 && !serverModel.audioOk) {
-        debugPrint("Auto-enabling Audio Capture...");
-        await Future.delayed(Duration(milliseconds: 300));
+      // Audio Capture
+      if (hasAudioPermission && !serverModel.audioOk) {
+        await Future.delayed(Duration(milliseconds: 500));
         serverModel.toggleAudio();
       }
 
-      // 4. Clipboard
+      // Clipboard
       if (!serverModel.clipboardOk) {
-        debugPrint("Auto-enabling Clipboard...");
-        await Future.delayed(Duration(milliseconds: 300));
+        await Future.delayed(Duration(milliseconds: 500));
         serverModel.toggleClipboard();
       }
 
       debugPrint("✓ All permissions auto-enabled");
     } catch (e) {
-      debugPrint("Error auto-enabling permissions: $e");
+      debugPrint("Error auto-enabling: $e");
     }
   }
-
-  // ДОБАВИТЬ: Показываем статус автовключенных разрешений
-  Widget _buildAutoEnabledStatus(ServerModel serverModel, bool hasAudioPermission) {
-    return Container(
-      padding: EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.green.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.green.withOpacity(0.3)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.check_circle, color: Colors.green, size: 20),
-              SizedBox(width: 8),
-              Text(
-                translate("Auto-enabled permissions:"),
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-            ],
-          ),
-          SizedBox(height: 8),
-          _statusRow("Screen Capture", serverModel.mediaOk),
-          _statusRow("Transfer file", serverModel.fileOk),
-          if (hasAudioPermission)
-            _statusRow("Audio Capture", serverModel.audioOk),
-          _statusRow("Enable clipboard", serverModel.clipboardOk),
-        ],
-      ),
-    );
-  }
-
-  // ДОБАВИТЬ: Строка статуса
-  Widget _statusRow(String name, bool isOk) {
-    return Padding(
-      padding: EdgeInsets.symmetric(vertical: 2),
-      child: Row(
-        children: [
-          SizedBox(width: 28),
-          Icon(
-            isOk ? Icons.check : Icons.hourglass_empty,
-            size: 16,
-            color: isOk ? Colors.green : Colors.orange,
-          ),
-          SizedBox(width: 8),
-          Text(
-            name,
-            style: TextStyle(
-              fontSize: 13,
-              color: isOk ? Colors.black87 : Colors.black54,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }
-
 
 
 
