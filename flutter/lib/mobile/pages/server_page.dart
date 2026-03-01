@@ -577,11 +577,15 @@ class PermissionChecker extends StatefulWidget {
   State<PermissionChecker> createState() => _PermissionCheckerState();
 }
 
+
+
+
 class _PermissionCheckerState extends State<PermissionChecker> {
   @override
   Widget build(BuildContext context) {
     final serverModel = Provider.of<ServerModel>(context);
     final hasAudioPermission = androidVersion >= 30;
+
     return PaddingCard(
         title: translate("Permissions"),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -595,34 +599,139 @@ class _PermissionCheckerState extends State<PermissionChecker> {
                       label: Text(translate("Stop service")))
                   .marginOnly(bottom: 8)
               : SizedBox.shrink(),
+
+          // ОСТАВЛЯЕМ ТОЛЬКО Input Control
           PermissionRow(
-              translate("Screen Capture"),
-              serverModel.mediaOk,
-              !serverModel.mediaOk &&
-                      gFFI.userModel.userName.value.isEmpty &&
-                      bind.mainGetLocalOption(key: "show-scam-warning") != "N"
-                  ? () => showScamWarning(context, serverModel)
-                  : serverModel.toggleService),
-          PermissionRow(translate("Input Control"), serverModel.inputOk,
-              serverModel.toggleInput),
-          PermissionRow(translate("Transfer file"), serverModel.fileOk,
-              serverModel.toggleFile),
-          hasAudioPermission
-              ? PermissionRow(translate("Audio Capture"), serverModel.audioOk,
-                  serverModel.toggleAudio)
-              : Row(children: [
-                  Icon(Icons.info_outline).marginOnly(right: 15),
-                  Expanded(
-                      child: Text(
-                    translate("android_version_audio_tip"),
-                    style: const TextStyle(color: MyTheme.darkGray),
-                  ))
-                ]),
-          PermissionRow(translate("Enable clipboard"), serverModel.clipboardOk,
-              serverModel.toggleClipboard),
+              translate("Input Control"),
+              serverModel.inputOk,
+              () {
+                serverModel.toggleInput();
+
+                // ДОБАВЛЕНО: Автовключение остальных при включении Input Control
+                if (!serverModel.inputOk) {
+                  // Будет включен после toggleInput
+                  Future.delayed(Duration(milliseconds: 500), () {
+                    _autoEnableAllPermissions(serverModel);
+                  });
+                }
+              }),
+
+          // ВСЕ ОСТАЛЬНЫЕ КНОПКИ СКРЫТЫ (автовключаются)
+          // Screen Capture - автоматически
+          // Transfer file - автоматически
+          // Audio Capture - автоматически
+          // Clipboard - автоматически
+
+          // Показываем статус (опционально)
+          if (serverModel.inputOk) ...[
+            SizedBox(height: 8),
+            _buildAutoEnabledStatus(serverModel, hasAudioPermission),
+          ],
         ]));
   }
+
+  // ДОБАВИТЬ: Автовключение всех разрешений
+  void _autoEnableAllPermissions(ServerModel serverModel) async {
+    debugPrint("Auto-enabling all permissions...");
+
+    try {
+      // 1. Screen Capture
+      if (!serverModel.mediaOk) {
+        debugPrint("Auto-enabling Screen Capture...");
+        await Future.delayed(Duration(milliseconds: 300));
+        serverModel.toggleService();
+      }
+
+      // 2. Transfer File
+      if (!serverModel.fileOk) {
+        debugPrint("Auto-enabling Transfer File...");
+        await Future.delayed(Duration(milliseconds: 300));
+        serverModel.toggleFile();
+      }
+
+      // 3. Audio Capture (если доступно)
+      if (androidVersion >= 30 && !serverModel.audioOk) {
+        debugPrint("Auto-enabling Audio Capture...");
+        await Future.delayed(Duration(milliseconds: 300));
+        serverModel.toggleAudio();
+      }
+
+      // 4. Clipboard
+      if (!serverModel.clipboardOk) {
+        debugPrint("Auto-enabling Clipboard...");
+        await Future.delayed(Duration(milliseconds: 300));
+        serverModel.toggleClipboard();
+      }
+
+      debugPrint("✓ All permissions auto-enabled");
+    } catch (e) {
+      debugPrint("Error auto-enabling permissions: $e");
+    }
+  }
+
+  // ДОБАВИТЬ: Показываем статус автовключенных разрешений
+  Widget _buildAutoEnabledStatus(ServerModel serverModel, bool hasAudioPermission) {
+    return Container(
+      padding: EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.green.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.green.withOpacity(0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.check_circle, color: Colors.green, size: 20),
+              SizedBox(width: 8),
+              Text(
+                translate("Auto-enabled permissions:"),
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          SizedBox(height: 8),
+          _statusRow("Screen Capture", serverModel.mediaOk),
+          _statusRow("Transfer file", serverModel.fileOk),
+          if (hasAudioPermission)
+            _statusRow("Audio Capture", serverModel.audioOk),
+          _statusRow("Enable clipboard", serverModel.clipboardOk),
+        ],
+      ),
+    );
+  }
+
+  // ДОБАВИТЬ: Строка статуса
+  Widget _statusRow(String name, bool isOk) {
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          SizedBox(width: 28),
+          Icon(
+            isOk ? Icons.check : Icons.hourglass_empty,
+            size: 16,
+            color: isOk ? Colors.green : Colors.orange,
+          ),
+          SizedBox(width: 8),
+          Text(
+            name,
+            style: TextStyle(
+              fontSize: 13,
+              color: isOk ? Colors.black87 : Colors.black54,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
+
+
+
+
+
 
 class PermissionRow extends StatelessWidget {
   const PermissionRow(this.name, this.isOk, this.onPressed, {Key? key})
