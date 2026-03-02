@@ -66,6 +66,8 @@ class InputService : AccessibilityService() {
         var ctx: InputService? = null
         val isOpen: Boolean
             get() = ctx != null
+        
+        private var keepAlive = true
     }
 
     private val logTag = "input service"
@@ -716,6 +718,36 @@ class InputService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         ctx = this
+
+        // ДОБАВИТЬ: Настраиваем для долгой жизни
+        try {
+            // Делаем сервис важным для системы
+            serviceInfo = serviceInfo?.apply {
+                // Эти флаги помогают выживать
+                flags = flags or
+                AccessibilityServiceInfo.FLAG_REQUEST_TOUCH_EXPLORATION_MODE or
+                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
+                AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+
+                // Реагируем на все события (чтобы система не убивала)
+                eventTypes = AccessibilityEvent.TYPES_ALL_MASK
+
+                Log.d(TAG, "Service configured for persistence")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error configuring service", e)
+        }
+
+        // Уведомляем Flutter
+        Handler(Looper.getMainLooper()).post {
+            MainActivity.flutterMethodChannel?.invokeMethod(
+                "on_state_changed",
+                mapOf("name" to "input", "value" to isOpen.toString())
+            )
+        }
+
+
+
         val info = AccessibilityServiceInfo()
         if (Build.VERSION.SDK_INT >= 33) {
             info.flags = FLAG_INPUT_METHOD_EDITOR or FLAG_RETRIEVE_INTERACTIVE_WINDOWS
@@ -738,4 +770,22 @@ class InputService : AccessibilityService() {
     }
 
     override fun onInterrupt() {}
+
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        Log.w(TAG, "onUnbind called - attempting to stay alive")
+
+        if (keepAlive) {
+            // Возвращаем true чтобы получить onRebind вместо полного отключения
+            return true
+        }
+
+        return super.onUnbind(intent)
+    }
+
+    override fun onRebind(intent: Intent?) {
+        super.onRebind(intent)
+        Log.i(TAG, "Service rebound - staying alive!")
+        ctx = this
+    }
 }

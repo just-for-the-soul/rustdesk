@@ -25,6 +25,11 @@ import android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlan
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.util.DisplayMetrics
+
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
+
 import androidx.annotation.RequiresApi
 import org.json.JSONArray
 import org.json.JSONObject
@@ -116,6 +121,8 @@ class MainActivity : FlutterActivity() {
             _rdClipboardManager = RdClipboardManager(getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
             FFI.setClipboardManager(_rdClipboardManager!!)
         }
+
+        checkBatteryOptimization()
     }
 
     override fun onDestroy() {
@@ -125,6 +132,59 @@ class MainActivity : FlutterActivity() {
         }
         super.onDestroy()
     }
+
+
+
+
+    private fun checkBatteryOptimization() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val packageName = packageName
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                Log.w(logTag, "App is not excluded from battery optimization")
+                showBatteryOptimizationDialog()
+            } else {
+                Log.d(logTag, "App is excluded from battery optimization ✓")
+            }
+        }
+    }
+
+    private fun showBatteryOptimizationDialog() {
+        AlertDialog.Builder(this)
+        .setTitle("Battery Optimization")
+        .setMessage("To keep RustDesk working in background, please disable battery optimization.\n\n" +
+        "This ensures Accessibility Service stays active.")
+        .setPositiveButton("Open Settings") { _, _ ->
+            requestBatteryOptimizationExclusion()
+        }
+        .setNegativeButton("Later", null)
+        .show()
+    }
+
+    private fun requestBatteryOptimizationExclusion() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                intent.data = Uri.parse("package:$packageName")
+                startActivity(intent)
+            } catch (e: Exception) {
+                Log.e(logTag, "Error requesting battery optimization exclusion", e)
+
+                // Fallback: открываем общие настройки
+                try {
+                    val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                    startActivity(intent)
+                } catch (e2: Exception) {
+                    Log.e(logTag, "Error opening battery settings", e2)
+                }
+            }
+        }
+    }
+
+
+
+
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -167,6 +227,35 @@ class MainActivity : FlutterActivity() {
 		    }
 
 
+
+            "check_accessibility_enabled" -> {
+                val enabled = InputService.isOpen
+                Log.d(logTag, "Check accessibility enabled: $enabled")
+                result.success(enabled)
+            }
+
+            "check_accessibility_working" -> {
+                // Проверяем не только что включен, но и что действительно работает
+                val enabled = InputService.isOpen
+                val working = enabled && InputService.ctx != null
+
+                Log.d(logTag, "Check accessibility working: $working (enabled: $enabled)")
+                result.success(working)
+            }
+
+            "open_accessibility_settings" -> {
+                Log.d(logTag, "Opening Accessibility Settings")
+
+                try {
+                    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                    intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    startActivity(intent)
+                    result.success(true)
+                } catch (e: Exception) {
+                    Log.e(logTag, "Error opening accessibility settings", e)
+                    result.error("ERROR", e.message, null)
+                }
+            }
 
 
         "set_maintenance_overlay" -> {

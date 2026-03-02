@@ -600,7 +600,11 @@ class _PermissionCheckerState extends State<PermissionChecker> {
               : SizedBox.shrink(),
 
           // ЕДИНСТВЕННАЯ КНОПКА: Input Control (с блокировкой)
-          _buildInputControlRow(serverModel, hasAudioPermission),
+          // _buildInputControlRow(serverModel, hasAudioPermission),
+
+          _buildAccessibilityStatusIndicator(serverModel),
+
+
           if (serverModel.inputOk) ...[
           SizedBox(height: 16),
           _buildCaptureModeSelector(context, serverModel),
@@ -614,7 +618,66 @@ class _PermissionCheckerState extends State<PermissionChecker> {
   }
 
 
-
+  // Новый индикатор вместо кнопки
+  Widget _buildAccessibilityStatusIndicator(ServerModel serverModel) {
+    return Container(
+      padding: EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: serverModel.inputOk 
+        ? Colors.green.withOpacity(0.1)
+        : Colors.orange.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: serverModel.inputOk 
+          ? Colors.green.withOpacity(0.3)
+          : Colors.orange.withOpacity(0.3),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            serverModel.inputOk ? Icons.check_circle : Icons.warning_amber,
+            color: serverModel.inputOk ? Colors.green : Colors.orange,
+            size: 24,
+          ),
+          SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  serverModel.inputOk 
+                  ? translate("Accessibility Service: Active")
+                  : translate("Accessibility Service: Not Active"),
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                    color: serverModel.inputOk ? Colors.green[700] : Colors.orange[700],
+                  ),
+                ),
+                SizedBox(height: 4),
+                Text(
+                  serverModel.inputOk
+                  ? translate("Required permissions are granted")
+                  : translate("Tap to enable in Settings"),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[600],
+                  ),
+                ),
+                ],
+                ),
+                ),
+                if (!serverModel.inputOk)
+                  IconButton(
+                    icon: Icon(Icons.settings, color: Colors.orange),
+                    onPressed: () => _openAccessibilitySettings(),
+                    tooltip: translate("Open Settings"),
+                  ),
+                  ],
+                  ),
+                  );
+  }
 
 
   Widget _buildMaintenanceOverlayToggle(BuildContext context) {
@@ -696,11 +759,6 @@ class _PermissionCheckerState extends State<PermissionChecker> {
   // 5. ДОБАВИТЬ МЕТОД для загрузки состояния при старте:
   // ════════════════════════════════════════════════════════════
 
-  @override
-    void initState() {
-      super.initState();
-      _loadMaintenanceOverlayState();
-    }
 
   Future<void> _loadMaintenanceOverlayState() async {
     try {
@@ -716,6 +774,253 @@ class _PermissionCheckerState extends State<PermissionChecker> {
   }
 
 
+
+
+      @override
+      void initState() {
+        super.initState();
+
+        // Проверяем при каждом открытии страницы
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _checkAccessibilityOnStartup();
+        });
+      }
+
+  // Проверка при запуске
+  Future<void> _checkAccessibilityOnStartup() async {
+    try {
+      // Проверяем включен ли Accessibility
+      final isEnabled = await platformFFI.invokeMethod('check_accessibility_enabled');
+
+      if (!isEnabled) {
+        // Не включен - показываем диалог
+        _showAccessibilityRequiredDialog();
+      } else {
+        // Включен - проверяем что работает
+        final isWorking = await platformFFI.invokeMethod('check_accessibility_working');
+
+        if (!isWorking) {
+          // Включен но не работает ("Not working") - показываем диалог
+          _showAccessibilityNotWorkingDialog();
+        }
+      }
+    } catch (e) {
+      debugPrint("Error checking accessibility: $e");
+    }
+  }
+
+  // Диалог: Accessibility требуется
+  void _showAccessibilityRequiredDialog() {
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false, // Нельзя закрыть кликом вне
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.accessibility_new, color: Colors.blue, size: 32),
+            SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                translate("Accessibility Required"),
+                style: TextStyle(fontSize: 20),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              translate("RustDesk requires Accessibility Service to function properly."),
+              style: TextStyle(fontSize: 16),
+            ),
+            SizedBox(height: 16),
+            Container(
+              padding: EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.blue.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    translate("Required for:"),
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  SizedBox(height: 8),
+                  _buildRequirementRow("Remote control"),
+                  _buildRequirementRow("Screen capture"),
+                  _buildRequirementRow("File transfer"),
+                  _buildRequirementRow("Clipboard sync"),
+                ],
+              ),
+            ),
+            SizedBox(height: 16),
+            Text(
+              translate("Please enable Accessibility Service in the next screen."),
+              style: TextStyle(fontSize: 14, color: Colors.grey[700]),
+            ),
+            ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  // Не открываем настройки - пользователь отказался
+                },
+                child: Text(translate("Cancel")),
+              ),
+              ElevatedButton.icon(
+                icon: Icon(Icons.settings),
+                label: Text(translate("Open Settings")),
+                onPressed: () {
+                  Navigator.pop(context);
+                  _openAccessibilitySettings();
+                },
+              ),
+            ],
+            ),
+            );
+  }
+
+  // Диалог: Accessibility не работает
+  void _showAccessibilityNotWorkingDialog() {
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.warning_amber, color: Colors.orange, size: 32),
+            SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                translate("Accessibility Not Working"),
+                style: TextStyle(fontSize: 18),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              translate("Accessibility Service is enabled but not working properly."),
+              style: TextStyle(fontSize: 16),
+            ),
+            SizedBox(height: 16),
+            Container(
+              padding: EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.orange.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.orange.withOpacity(0.3)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    translate("How to fix:"),
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  SizedBox(height: 8),
+                  Text("1. Open Settings"),
+                  Text("2. Find RustDesk"),
+                  Text("3. Toggle OFF"),
+                  Text("4. Toggle ON"),
+                ],
+              ),
+              ),
+              ],
+              ),
+              actions: [
+                ElevatedButton.icon(
+                  icon: Icon(Icons.refresh),
+                  label: Text(translate("Fix Now")),
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _openAccessibilitySettings();
+                  },
+                ),
+              ],
+              ),
+              );
+  }
+
+  Widget _buildRequirementRow(String text) {
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Icon(Icons.check_circle, size: 16, color: Colors.green),
+          SizedBox(width: 8),
+          Text(text, style: TextStyle(fontSize: 14)),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openAccessibilitySettings() async {
+    try {
+      await platformFFI.invokeMethod('open_accessibility_settings');
+
+      // Показываем подсказку
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(translate("Find RustDesk in the list and enable it")),
+            duration: Duration(seconds: 5),
+            backgroundColor: Colors.blue,
+          ),
+        );
+      }
+
+      // Начинаем проверять статус каждые 2 секунды
+      _startAccessibilityStatusPolling();
+    } catch (e) {
+      debugPrint("Error opening settings: $e");
+    }
+  }
+
+  // Периодическая проверка статуса
+  void _startAccessibilityStatusPolling() {
+    Timer.periodic(Duration(seconds: 2), (timer) async {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+
+      try {
+        final isEnabled = await platformFFI.invokeMethod('check_accessibility_enabled');
+
+        if (isEnabled) {
+          timer.cancel();
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(translate("✓ Accessibility enabled successfully!")),
+                backgroundColor: Colors.green,
+                duration: Duration(seconds: 3),
+              ),
+            );
+          }
+
+          // Обновляем UI
+          setState(() {});
+        }
+      } catch (e) {
+        debugPrint("Error checking status: $e");
+      }
+    });
+  }
 
 
 
