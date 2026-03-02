@@ -6,6 +6,7 @@ package com.carriez.flutter_hbb
  * Inspired by [droidVNC-NG] https://github.com/bk138/droidVNC-NG
  */
 
+import android.content.Intent
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
@@ -63,6 +64,7 @@ const val LONG_TAP_DELAY = 200L
 class InputService : AccessibilityService() {
 
     companion object {
+        private const val TAG = "InputService"
         var ctx: InputService? = null
         val isOpen: Boolean
             get() = ctx != null

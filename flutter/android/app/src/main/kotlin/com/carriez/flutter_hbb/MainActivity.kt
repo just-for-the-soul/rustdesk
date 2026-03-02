@@ -31,6 +31,7 @@ import android.os.PowerManager
 import android.provider.Settings
 
 import androidx.annotation.RequiresApi
+import androidx.appcompat.app.AlertDialog
 import org.json.JSONArray
 import org.json.JSONObject
 import com.hjq.permissions.XXPermissions
