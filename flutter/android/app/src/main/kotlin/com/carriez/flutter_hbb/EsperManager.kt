@@ -7,62 +7,71 @@ import io.esper.devicesdk.constants.AppOpsPermissions
 
 /**
  * Esper MDM Manager для RustDesk
- * 
- * Использует актуальные методы Esper Device SDK
- * Версия SDK: 3.3.0101.27+
+ * Упрощенная версия с минимальными методами
  */
 object EsperManager {
     private const val TAG = "EsperManager"
     
     private var sdk: EsperDeviceSDK? = null
-    private var isInitialized = false
+    private var activated = false
     
     /**
-     * Инициализация SDK (БЕЗ API ключа для MDM устройств)
+     * Инициализация SDK
      */
     fun initialize(context: Context): Boolean {
         return try {
             sdk = EsperDeviceSDK.getInstance(context.applicationContext)
             
-            val activated = sdk?.isActivated ?: false
-            isInitialized = activated
+            // Проверяем активацию
+            activated = checkActivation()
             
             if (activated) {
                 Log.i(TAG, "═══════════════════════════════════")
                 Log.i(TAG, "✓ Esper SDK АКТИВИРОВАН!")
-                Log.i(TAG, "  Устройство под управлением MDM")
                 Log.i(TAG, "═══════════════════════════════════")
-                logDeviceInfo()
+                getDeviceInfo()
             } else {
-                Log.w(TAG, "⚠️  Esper SDK НЕ активирован")
+                Log.w(TAG, "⚠️  Esper SDK не активирован")
                 Log.w(TAG, "Установите APK через Esper Console")
             }
             
             activated
         } catch (e: Exception) {
-            Log.e(TAG, "Ошибка инициализации Esper SDK", e)
-            isInitialized = false
+            Log.e(TAG, "Ошибка инициализации SDK", e)
+            activated = false
             false
         }
     }
     
     /**
-     * Проверка доступности Esper
+     * Проверка активации SDK
      */
-    fun isAvailable(): Boolean = isInitialized
+    private fun checkActivation(): Boolean {
+        return try {
+            val method = sdk?.javaClass?.getMethod("isActivated")
+            val result = method?.invoke(sdk)
+            result as? Boolean ?: false
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking activation", e)
+            false
+        }
+    }
     
     /**
-     * Информация об устройстве
+     * Проверка доступности
      */
-    private fun logDeviceInfo() {
+    fun isAvailable(): Boolean = activated
+    
+    /**
+     * Получить информацию об устройстве
+     */
+    private fun getDeviceInfo() {
         try {
             sdk?.getEsperDeviceInfo(object : EsperDeviceSDK.Callback<io.esper.devicesdk.models.EsperDeviceInfo> {
                 override fun onResponse(response: io.esper.devicesdk.models.EsperDeviceInfo?) {
-                    response?.let { info ->
-                        Log.d(TAG, "Device Info:")
-                        Log.d(TAG, "  ID: ${info.deviceId}")
-                        Log.d(TAG, "  Serial: ${info.serialNo}")
-                        Log.d(TAG, "  IMEI: ${info.imei1}")
+                    response?.let {
+                        Log.d(TAG, "Device ID: ${it.deviceId}")
+                        Log.d(TAG, "Serial: ${it.serialNo}")
                     }
                 }
                 
@@ -71,279 +80,109 @@ object EsperManager {
                 }
             })
         } catch (e: Exception) {
-            Log.e(TAG, "Exception in logDeviceInfo", e)
+            Log.e(TAG, "Exception in getDeviceInfo", e)
         }
     }
     
     /**
-     * Дать Runtime разрешения (обычные)
+     * Дать SYSTEM_ALERT_WINDOW разрешение через AppOps
+     * (для MaintenanceOverlay)
      */
-    fun grantRuntimePermissions(packageName: String = "com.carriez.flutter_hbb", callback: (Boolean) -> Unit) {
-        if (!isAvailable()) {
-            Log.w(TAG, "SDK недоступен")
+    fun grantOverlayPermission(callback: (Boolean) -> Unit) {
+        if (!activated) {
             callback(false)
             return
         }
         
-        val permissions = arrayOf(
-            android.Manifest.permission.CAMERA,
-            android.Manifest.permission.RECORD_AUDIO,
-            android.Manifest.permission.READ_EXTERNAL_STORAGE,
-            android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
-        )
-        
-        Log.d(TAG, "Выдача ${permissions.size} runtime разрешений...")
-        
-        var granted = 0
-        permissions.forEach { permission ->
-            try {
-                sdk?.grantRuntimePermission(
-                    packageName,
-                    permission,
-                    object : EsperDeviceSDK.Callback<Void> {
-                        override fun onResponse(response: Void?) {
-                            granted++
-                            Log.d(TAG, "  ✓ $permission")
-                            if (granted == permissions.size) {
-                                callback(true)
-                            }
-                        }
-                        
-                        override fun onFailure(t: Throwable) {
-                            Log.e(TAG, "  ✗ $permission: ${t.message}")
-                            granted++
-                            if (granted == permissions.size) {
-                                callback(false)
-                            }
-                        }
-                    }
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "Exception granting $permission", e)
-                granted++
-            }
-        }
-    }
-    
-    /**
-     * Дать AppOps разрешения (специальные)
-     */
-    fun grantAppOpsPermissions(callback: (Boolean) -> Unit) {
-        if (!isAvailable()) {
-            callback(false)
-            return
-        }
-        
-        Log.d(TAG, "Выдача AppOps разрешений...")
-        
-        var completed = 0
-        var successful = 0
-        val totalOps = 2 // SYSTEM_ALERT_WINDOW + WRITE_SETTINGS
-        
-        // 1. SYSTEM_ALERT_WINDOW (для MaintenanceOverlay!)
         try {
+            Log.d(TAG, "Выдача SYSTEM_ALERT_WINDOW разрешения...")
+            
             sdk?.setAppOpMode(
                 AppOpsPermissions.OP_SYSTEM_ALERT_WINDOW,
                 true,
                 object : EsperDeviceSDK.Callback<Void> {
                     override fun onResponse(response: Void?) {
-                        completed++
-                        successful++
-                        Log.d(TAG, "  ✓ SYSTEM_ALERT_WINDOW (overlay)")
-                        checkCompletion()
+                        Log.i(TAG, "✓ SYSTEM_ALERT_WINDOW разрешен")
+                        callback(true)
                     }
                     
                     override fun onFailure(t: Throwable) {
-                        completed++
-                        Log.e(TAG, "  ✗ SYSTEM_ALERT_WINDOW: ${t.message}")
-                        checkCompletion()
+                        Log.e(TAG, "✗ Ошибка SYSTEM_ALERT_WINDOW: ${t.message}")
+                        callback(false)
                     }
                 }
             )
         } catch (e: Exception) {
-            completed++
-            Log.e(TAG, "Exception setting SYSTEM_ALERT_WINDOW", e)
+            Log.e(TAG, "Exception granting overlay", e)
+            callback(false)
+        }
+    }
+    
+    /**
+     * Дать WRITE_SETTINGS разрешение
+     */
+    fun grantWriteSettingsPermission(callback: (Boolean) -> Unit) {
+        if (!activated) {
+            callback(false)
+            return
         }
         
-        // 2. WRITE_SETTINGS
         try {
             sdk?.setAppOpMode(
                 AppOpsPermissions.OP_WRITE_SETTINGS,
                 true,
                 object : EsperDeviceSDK.Callback<Void> {
                     override fun onResponse(response: Void?) {
-                        completed++
-                        successful++
-                        Log.d(TAG, "  ✓ WRITE_SETTINGS")
-                        checkCompletion()
-                    }
-                    
-                    override fun onFailure(t: Throwable) {
-                        completed++
-                        Log.e(TAG, "  ✗ WRITE_SETTINGS: ${t.message}")
-                        checkCompletion()
-                    }
-                }
-            )
-        } catch (e: Exception) {
-            completed++
-            Log.e(TAG, "Exception setting WRITE_SETTINGS", e)
-        }
-        
-        fun checkCompletion() {
-            if (completed == totalOps) {
-                Log.i(TAG, "AppOps: $successful/$totalOps успешно")
-                callback(successful == totalOps)
-            }
-        }
-    }
-    
-    /**
-     * Дать ВСЕ разрешения (Runtime + AppOps)
-     */
-    fun grantAllPermissions(callback: (Boolean) -> Unit) {
-        if (!isAvailable()) {
-            callback(false)
-            return
-        }
-        
-        Log.i(TAG, "═══════════════════════════════════")
-        Log.i(TAG, "Выдача ВСЕХ разрешений...")
-        Log.i(TAG, "═══════════════════════════════════")
-        
-        // Сначала Runtime
-        grantRuntimePermissions { runtimeSuccess ->
-            // Затем AppOps
-            grantAppOpsPermissions { appOpsSuccess ->
-                val allSuccess = runtimeSuccess && appOpsSuccess
-                Log.i(TAG, "═══════════════════════════════════")
-                Log.i(TAG, if (allSuccess) "✓ ВСЕ РАЗРЕШЕНИЯ ВЫДАНЫ else "⚠️  Не все разрешения выданы")
-                Log.i(TAG, "═══════════════════════════════════")
-                callback(allSuccess)
-            }
-        }
-    }
-    
-    /**
-     * Включить Accessibility Service
-     */
-    fun enableAccessibilityService(callback: (Boolean) -> Unit) {
-        if (!isAvailable()) {
-            callback(false)
-            return
-        }
-        
-        try {
-            val component = "com.carriez.flutter_hbb/.InputService"
-            
-            sdk?.enableAccessibilityService(
-                component,
-                object : EsperDeviceSDK.Callback<Void> {
-                    override fun onResponse(response: Void?) {
-                        Log.i(TAG, "✓ Accessibility Service включен!")
+                        Log.i(TAG, "✓ WRITE_SETTINGS разрешен")
                         callback(true)
                     }
                     
                     override fun onFailure(t: Throwable) {
-                        Log.e(TAG, "Ошибка включения Accessibility: ${t.message}")
+                        Log.e(TAG, "✗ Ошибка WRITE_SETTINGS: ${t.message}")
                         callback(false)
                     }
                 }
             )
         } catch (e: Exception) {
-            Log.e(TAG, "Exception enabling accessibility", e)
+            Log.e(TAG, "Exception granting write settings", e)
             callback(false)
         }
     }
     
     /**
-     * Исключить из Battery Optimization
+     * Дать все AppOps разрешения
      */
-    fun disableBatteryOptimization(packageName: String = "com.carriez.flutter_hbb") {
-        if (!isAvailable()) return
-        
-        try {
-            sdk?.addAppToPowerWhitelist(
-                packageName,
-                object : EsperDeviceSDK.Callback<Void> {
-                    override fun onResponse(response: Void?) {
-                        Log.i(TAG, "✓ Battery optimization отключен")
-                    }
-                    
-                    override fun onFailure(t: Throwable) {
-                        Log.e(TAG, "Ошибка battery optimization: ${t.message}")
-                    }
-                }
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "Exception disabling battery opt", e)
+    fun grantAllAppOpsPermissions(callback: (Boolean) -> Unit) {
+        if (!activated) {
+            callback(false)
+            return
         }
-    }
-    
-    /**
-     * Включить Kiosk Mode (держать RustDesk всегда запущенным)
-     */
-    fun enableKioskMode(packageName: String = "com.carriez.flutter_hbb") {
-        if (!isAvailable()) return
         
-        try {
-            sdk?.setKioskApp(
-                packageName,
-                null, // null = multi-app kiosk mode
-                object : EsperDeviceSDK.Callback<Void> {
-                    override fun onResponse(response: Void?) {
-                        Log.i(TAG, "✓ Kiosk Mode включен")
-                    }
-                    
-                    override fun onFailure(t: Throwable) {
-                        Log.e(TAG, "Ошибка Kiosk Mode: ${t.message}")
-                    }
-                }
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "Exception enabling kiosk", e)
+        Log.i(TAG, "Выдача всех AppOps разрешений...")
+        
+        var completed = 0
+        var successful = 0
+        val total = 2
+        
+        fun checkCompletion() {
+            if (completed == total) {
+                Log.i(TAG, "AppOps: $successful/$total успешно")
+                callback(successful == total)
+            }
         }
-    }
-    
-    /**
-     * Выключить Kiosk Mode
-     */
-    fun disableKioskMode() {
-        if (!isAvailable()) return
         
-        try {
-            sdk?.clearKioskApp(object : EsperDeviceSDK.Callback<Void> {
-                override fun onResponse(response: Void?) {
-                    Log.i(TAG, "✓ Kiosk Mode выключен")
-                }
-                
-                override fun onFailure(t: Throwable) {
-                    Log.e(TAG, "Ошибка выключения Kiosk: ${t.message}")
-                }
-            })
-        } catch (e: Exception) {
-            Log.e(TAG, "Exception disabling kiosk", e)
+        // 1. SYSTEM_ALERT_WINDOW
+        grantOverlayPermission { success ->
+            completed++
+            if (success) successful++
+            checkCompletion()
         }
-    }
-    
-    /**
-     * Перезагрузить устройство
-     */
-    fun rebootDevice() {
-        if (!isAvailable()) return
         
-        try {
-            sdk?.reboot(object : EsperDeviceSDK.Callback<Void> {
-                override fun onResponse(response: Void?) {
-                    Log.i(TAG, "Устройство перезагружается...")
-                }
-                
-                override fun onFailure(t: Throwable) {
-                    Log.e(TAG, "Ошибка перезагрузки: ${t.message}")
-                }
-            })
-        } catch (e: Exception) {
-            Log.e(TAG, "Exception rebooting", e)
+        // 2. WRITE_SETTINGS
+        grantWriteSettingsPermission { success ->
+            completed++
+            if (success) successful++
+            checkCompletion()
         }
     }
     
@@ -361,23 +200,23 @@ object EsperManager {
                 Log.i(TAG, "✓ RustDesk запущен")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Ошибка запуска RustDesk", e)
+            Log.e(TAG, "Ошибка запуска", e)
         }
     }
     
     /**
-     * Получить статус для Flutter
+     * Получить статус
      */
     fun getStatus(): Map<String, Any> {
         val status = mutableMapOf<String, Any>()
         
         try {
-            status["available"] = isAvailable()
-            status["activated"] = sdk?.isActivated ?: false
+            status["available"] = activated
+            status["activated"] = activated
             
-            if (isAvailable()) {
-                // Асинхронно получаем device info, пока возвращаем базовый статус
-                status["device_id"] = "pending..."
+            if (activated) {
+                status["device_id"] = "available"
+                status["sdk_ready"] = true
             }
         } catch (e: Exception) {
             status["error"] = e.message ?: "unknown"
