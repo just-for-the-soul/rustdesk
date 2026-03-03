@@ -9,6 +9,9 @@ package com.carriez.flutter_hbb
 
 import ffi.FFI
 
+import android.os.Handler
+import android.os.Looper
+
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
