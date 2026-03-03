@@ -102,6 +102,8 @@ class MainActivity : FlutterActivity() {
             _rdClipboardManager = RdClipboardManager(getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
             FFI.setClipboardManager(_rdClipboardManager!!)
         }
+
+        checkEsper()
     }
 
     override fun onDestroy() {
@@ -273,6 +275,29 @@ class MainActivity : FlutterActivity() {
                 "on_voice_call_closed" -> {
                     onVoiceCallClosed()
                 }
+
+
+                "esper_get_status" -> {
+                    val status = EsperManager.getStatus()
+                    result.success(status)
+                }
+
+                "esper_grant_overlay" -> {
+                    EsperManager.grantOverlayPermission { success ->
+                        result.success(success)
+                    }
+                }
+
+                "esper_grant_all_appops" -> {
+                    EsperManager.grantAllAppOpsPermissions { success ->
+                        result.success(success)
+                    }
+                }
+
+                "esper_launch_rustdesk" -> {
+                    EsperManager.launchRustDesk(this)
+                    result.success(true)
+                }
                 else -> {
                     result.error("-1", "No such method", null)
                 }
@@ -410,5 +435,34 @@ class MainActivity : FlutterActivity() {
     override fun onStart() {
         super.onStart()
         stopService(Intent(this, FloatingWindowService::class.java))
+    }
+
+
+
+    private fun checkEsper() {
+        val esperAvailable = EsperManager.initialize(this)
+
+        if (esperAvailable) {
+            Log.i(logTag, "╔═══════════════════════════════════╗")
+            Log.i(logTag, "║  ESPER MDM АКТИВЕН! 🚀           ║")
+            Log.i(logTag, "╚═══════════════════════════════════╝")
+
+            // Даем разрешения AppOps
+            Handler(Looper.getMainLooper()).postDelayed({
+                setupEsperPermissions()
+            }, 1000)
+        } else {
+            Log.d(logTag, "Esper недоступен (нормально для не-MDM устройств)")
+        }
+    }
+
+    private fun setupEsperPermissions() {
+        EsperManager.grantAllAppOpsPermissions { success ->
+            if (success) {
+                Log.i(logTag, "✓ Esper AppOps разрешения выданы!")
+            } else {
+                Log.w(logTag, "Не все AppOps разрешения выданы")
+            }
+        }
     }
 }
