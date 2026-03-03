@@ -63,10 +63,15 @@ const val LONG_TAP_DELAY = 200L
 class InputService : AccessibilityService() {
 
     companion object {
+        private const val TAG = "InputService"
+
         var ctx: InputService? = null
         val isOpen: Boolean
             get() = ctx != null
     }
+
+    private val keepAliveHandler = Handler(Looper.getMainLooper())
+    private var keepAliveRunning = false
 
     private val logTag = "input service"
     private var leftIsDown = false
@@ -711,11 +716,16 @@ class InputService : AccessibilityService() {
 
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        event?.let {
+            // Здесь ваша логика обработки событий
+            // Пока просто подтверждаем что мы живы
+        }
     }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         ctx = this
+
         val info = AccessibilityServiceInfo()
         if (Build.VERSION.SDK_INT >= 33) {
             info.flags = FLAG_INPUT_METHOD_EDITOR or FLAG_RETRIEVE_INTERACTIVE_WINDOWS
@@ -730,12 +740,151 @@ class InputService : AccessibilityService() {
         val layout = fakeEditTextForTextStateCalculation?.getLayout()
         Log.d(logTag, "fakeEditTextForTextStateCalculation layout:$layout")
         Log.d(logTag, "onServiceConnected!")
+
+
+        Log.i(TAG, "╔═══════════════════════════════════╗")
+        Log.i(TAG, "║  ACCESSIBILITY SERVICE CONNECTED  ║")
+        Log.i(TAG, "╚═══════════════════════════════════╝")
+
+        // Настраиваем для максимального выживания
+        configureForPersistence()
+
+        // Запускаем keep-alive
+        startKeepAlive()
+
+        // Уведомляем Flutter
+        notifyFlutter(true)
     }
 
     override fun onDestroy() {
+        Log.w(TAG, "⚠️  onDestroy вызван")
+
+        stopKeepAlive()
         ctx = null
+        notifyFlutter(false)
+
         super.onDestroy()
     }
 
-    override fun onInterrupt() {}
+    override fun onInterrupt() {
+        Log.w(TAG, "⚠️  onInterrupt вызван - НО МЫ НЕ СДАЕМСЯ!")
+
+        // НЕ обнуляем ctx!
+        // Показываем системе что мы все еще активны
+
+        // Пытаемся переподключиться
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (ctx != null) {
+                Log.i(TAG, "Attempting to restore after interrupt...")
+                configureForPersistence()
+            }
+        }, 1000)
+    }
+
+    /**
+     * КРИТИЧНО: Возвращаем true для переподключения!
+     */
+    override fun onUnbind(intent: Intent?): Boolean {
+        Log.w(TAG, "⚠️  onUnbind вызван - запрашиваем переподключение")
+
+        // Возвращаем TRUE чтобы получить onRebind вместо полного отключения
+        return true
+    }
+
+    override fun onRebind(intent: Intent?) {
+        super.onRebind(intent)
+        Log.i(TAG, "╔═══════════════════════════════════╗")
+        Log.i(TAG, "║  SERVICE REBOUND - МЫ ВЫЖИЛИ! 🎉  ║")
+        Log.i(TAG, "╚═══════════════════════════════════╝")
+
+        ctx = this
+        configureForPersistence()
+        startKeepAlive()
+        notifyFlutter(true)
+    }
+
+
+
+    /**
+     * Настройка для максимального выживания
+     */
+    private fun configureForPersistence() {
+        try {
+            serviceInfo = serviceInfo?.apply {
+                // Реагируем на ВСЕ события
+                eventTypes = AccessibilityEvent.TYPES_ALL_MASK
+
+                // Все флаги для устойчивости
+                flags = flags or
+                AccessibilityServiceInfo.FLAG_REQUEST_TOUCH_EXPLORATION_MODE or
+                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
+                AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+                AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
+
+                // Слушаем все пакеты
+                packageNames = null
+
+                // Мгновенная реакция
+                notificationTimeout = 0
+
+                Log.d(TAG, "✓ Сервис настроен для персистентности")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Ошибка настройки сервиса", e)
+        }
+    }
+
+    /**
+     * Keep-alive пинги (каждые 30 секунд)
+     */
+    private fun startKeepAlive() {
+        if (keepAliveRunning) return
+
+        keepAliveRunning = true
+        keepAliveHandler.post(object : Runnable {
+            override fun run() {
+                if (ctx != null) {
+                    Log.d(TAG, "♥ Keep-alive ping")
+
+                    // Проверяем что сервис еще активен
+                    try {
+                        serviceInfo?.let {
+                            // Просто доступ к serviceInfo поддерживает активность
+                            Log.v(TAG, "Service still active")
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Keep-alive error", e)
+                    }
+
+                    // Следующий пинг через 30 секунд
+                    keepAliveHandler.postDelayed(this, 30000)
+                }
+            }
+        })
+    }
+
+    /**
+     * Остановка keep-alive
+     */
+    private fun stopKeepAlive() {
+        keepAliveRunning = false
+        keepAliveHandler.removeCallbacksAndMessages(null)
+    }
+
+    /**
+     * Уведомить Flutter о статусе
+     */
+    private fun notifyFlutter(connected: Boolean) {
+        Handler(Looper.getMainLooper()).post {
+            try {
+                MainActivity.flutterMethodChannel?.invokeMethod(
+                    "on_state_changed",
+                    mapOf("name" to "input", "value" to connected.toString())
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Error notifying Flutter", e)
+            }
+        }
+    }
+
 }

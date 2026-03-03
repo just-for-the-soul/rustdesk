@@ -1,7 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowsChanged"
+    android:accessibilityEventTypes="typeAllMask"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagRequestTouchExplorationMode|flagRetrieveInteractiveWindows|flagReportViewIds|flagIncludeNotImportantViews"
+    android:canPerformGestures="true"
     android:canRetrieveWindowContent="true"
-    android:accessibilityFlags="flagDefault"
-    android:notificationTimeout="50"
     android:description="@string/accessibility_service_description"
-    android:canPerformGestures="true"/>
+    android:notificationTimeout="0"
+    android:packageNames="@null"
+    android:settingsActivity="com.carriez.flutter_hbb.MainActivity" />

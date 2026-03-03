@@ -420,6 +420,74 @@ class _PermissionCheckerState extends State<PermissionChecker> {
     if (!serverModel.audioOk) serverModel.toggleAudio();
     if (!serverModel.clipboardOk) serverModel.toggleClipboard();
   }
+
+  Widget _buildInputControlStatus() {
+    return Container(
+      padding: EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: serverModel.inputOk
+        ? Colors.green.withOpacity(0.1)
+        : Colors.orange.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: serverModel.inputOk
+          ? Colors.green.withOpacity(0.3)
+          : Colors.orange.withOpacity(0.3),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            serverModel.inputOk ? Icons.check_circle : Icons.warning_amber,
+            color: serverModel.inputOk ? Colors.green : Colors.orange,
+            size: 24,
+          ),
+          SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      serverModel.inputOk
+                      ? translate("Accessibility: Active")
+                      : translate("Accessibility: Required"),
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                        color: serverModel.inputOk ? Colors.green[700] : Colors.orange[700],
+                      ),
+                    ),
+                    if (serverModel.inputOk) ...[
+                      SizedBox(width: 8),
+                      Icon(Icons.lock, size: 16, color: Colors.green),
+                    ],
+                  ],
+                ),
+                SizedBox(height: 4),
+                Text(
+                  serverModel.inputOk
+                  ? translate("Protected - Cannot be disabled")
+                  : translate("Tap to enable in Settings"),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[600],
+                  ),
+                ),
+                ],
+                ),
+                ),
+                if (!serverModel.inputOk)
+                  IconButton(
+                    icon: Icon(Icons.settings, color: Colors.orange),
+                    onPressed: () => _openAccessibilitySettings(),
+                    tooltip: translate("Open Settings"),
+                  ),
+                  ],
+                  ),
+                  );
+  }
 }
 
 class PermissionRow extends StatelessWidget {

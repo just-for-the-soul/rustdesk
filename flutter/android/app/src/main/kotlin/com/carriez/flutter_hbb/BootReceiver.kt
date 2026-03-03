@@ -19,6 +19,15 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         Log.d(logTag, "onReceive ${intent.action}")
 
+        if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
+            Log.i("BootReceiver", "Device booted - checking Accessibility")
+
+            // Проверяем через 5 секунд после загрузки
+            Handler(Looper.getMainLooper()).postDelayed({
+                checkAndRestoreAccessibility(context)
+            }, 5000)
+        }
+
         if (Intent.ACTION_BOOT_COMPLETED == intent.action || DEBUG_BOOT_COMPLETED == intent.action) {
             // check SharedPreferences config
             val prefs = context.getSharedPreferences(KEY_SHARED_PREFERENCES, FlutterActivity.MODE_PRIVATE)
@@ -42,6 +51,40 @@ class BootReceiver : BroadcastReceiver() {
             } else {
                 context.startService(it)
             }
+        }
+    }
+
+
+
+    private fun checkAndRestoreAccessibility(context: Context) {
+        if (!InputService.isOpen) {
+            Log.w("BootReceiver", "Accessibility не активен после перезагрузки")
+
+            // Если у нас Esper - включаем программно
+            if (EsperManager.isAvailable()) {
+                Log.i("BootReceiver", "Включаем Accessibility через Esper...")
+                EsperManager.enableAccessibilityService { success ->
+                    if (success) {
+                        Log.i("BootReceiver", "✓ Accessibility восстановлен!")
+                    }
+                }
+            } else {
+                // Открываем настройки (пользователь должен включить)
+                Log.i("BootReceiver", "Открываем настройки Accessibility...")
+                openAccessibilitySettings(context)
+            }
+        } else {
+            Log.i("BootReceiver", "✓ Accessibility уже активен")
+        }
+    }
+
+    private fun openAccessibilitySettings(context: Context) {
+        try {
+            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            Log.e("BootReceiver", "Error opening settings", e)
         }
     }
 }

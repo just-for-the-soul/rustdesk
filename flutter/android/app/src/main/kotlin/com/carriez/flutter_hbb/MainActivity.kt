@@ -107,6 +107,7 @@ class MainActivity : FlutterActivity() {
         }
 
         checkEsper()
+        checkBatteryOptimization()
     }
 
     override fun onDestroy() {
@@ -466,6 +467,39 @@ class MainActivity : FlutterActivity() {
             } else {
                 Log.w(logTag, "Не все AppOps разрешения выданы")
             }
+        }
+    }
+
+    private fun checkBatteryOptimization() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            val packageName = packageName
+
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                Log.w(logTag, "⚠️  Battery optimization ВКЛЮЧЕНА - это плохо!")
+
+                // Если есть Esper - выключаем программно
+                if (EsperManager.isAvailable()) {
+                    EsperManager.disableBatteryOptimization()
+                } else {
+                    // Запрашиваем у пользователя
+                    requestBatteryOptimizationExclusion()
+                }
+            } else {
+                Log.i(logTag, "✓ Battery optimization отключена")
+            }
+        }
+    }
+
+    private fun requestBatteryOptimizationExclusion() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                intent.data = Uri.parse("package:$packageName")
+                startActivity(intent)
+            }
+        } catch (e: Exception) {
+            Log.e(logTag, "Error requesting battery exclusion", e)
         }
     }
 }
