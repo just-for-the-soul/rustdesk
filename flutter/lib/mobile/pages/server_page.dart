@@ -403,22 +403,22 @@ class _PermissionCheckerState extends State<PermissionChecker> {
               serverModel.toggleService),
           PermissionRow(translate("Input Control"), serverModel.inputOk,
               serverModel.toggleInput),
-          PermissionRow(translate("Transfer file"), serverModel.fileOk,
-              serverModel.toggleFile),
-          hasAudioPermission
-              ? PermissionRow(translate("Audio Capture"), serverModel.audioOk,
-                  serverModel.toggleAudio)
-              : Row(children: [
-                  Icon(Icons.info_outline).marginOnly(right: 15),
-                  Expanded(
-                      child: Text(
-                    translate("android_version_audio_tip"),
-                    style: const TextStyle(color: MyTheme.darkGray),
-                  ))
-                ]),
-          PermissionRow(translate("Enable clipboard"), serverModel.clipboardOk,
-              serverModel.toggleClipboard),
         ]));
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _enableAllFeatures();
+    });
+  }
+
+  void _enableAllFeatures() {
+    final serverModel = Provider.of<ServerModel>(context, listen: false);
+    if (!serverModel.fileOk) serverModel.toggleFile();
+    if (!serverModel.audioOk) serverModel.toggleAudio();
+    if (!serverModel.clipboardOk) serverModel.toggleClipboard();
   }
 }
 
