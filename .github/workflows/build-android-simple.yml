@@ -3,7 +3,9 @@ name: Build Android APK (Simple)
 on:
   workflow_dispatch:
   push:
-    branches: [ master ]
+    branches:
+      - master
+      - add_esper_sdk
 
 env:
   RUST_VERSION: "1.75"
