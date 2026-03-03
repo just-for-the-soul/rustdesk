@@ -401,8 +401,9 @@ class _PermissionCheckerState extends State<PermissionChecker> {
               translate("Screen Capture"),
               serverModel.mediaOk,
               serverModel.toggleService),
-          PermissionRow(translate("Input Control"), serverModel.inputOk,
-              serverModel.toggleInput),
+
+
+          _buildInputControlStatus(serverModel),
         ]));
   }
 
@@ -421,7 +422,7 @@ class _PermissionCheckerState extends State<PermissionChecker> {
     if (!serverModel.clipboardOk) serverModel.toggleClipboard();
   }
 
-  Widget _buildInputControlStatus() {
+  Widget _buildInputControlStatus(ServerModel serverModel) {
     return Container(
       padding: EdgeInsets.all(12),
       decoration: BoxDecoration(
