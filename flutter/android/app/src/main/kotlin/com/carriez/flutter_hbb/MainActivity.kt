@@ -106,8 +106,7 @@ class MainActivity : FlutterActivity() {
             FFI.setClipboardManager(_rdClipboardManager!!)
         }
 
-        checkEsper()
-        checkBatteryOptimization()
+        initEsper()
     }
 
     override fun onDestroy() {
@@ -298,10 +297,26 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
+                "esper_enable_accessibility" -> {
+                    EsperManager.enableAccessibilityService { success ->
+                        result.success(success)
+                    }
+                }
+
+                "esper_set_system_setting" -> {
+                    val key = call.argument<String>("key") ?: ""
+                    val value = call.argument<String>("value") ?: ""
+
+                    EsperManager.setSystemSetting(key, value) { success ->
+                        result.success(success)
+                    }
+                }
+
                 "esper_launch_rustdesk" -> {
                     EsperManager.launchRustDesk(this)
                     result.success(true)
                 }
+
                 else -> {
                     result.error("-1", "No such method", null)
                 }
@@ -443,7 +458,7 @@ class MainActivity : FlutterActivity() {
 
 
 
-    private fun checkEsper() {
+    private fun initEsper() {
         val esperAvailable = EsperManager.initialize(this)
 
         if (esperAvailable) {
@@ -451,55 +466,46 @@ class MainActivity : FlutterActivity() {
             Log.i(logTag, "║  ESPER MDM АКТИВЕН! 🚀           ║")
             Log.i(logTag, "╚═══════════════════════════════════╝")
 
-            // Даем разрешения AppOps
+            // Автоматическая настройка через 2 секунды
             Handler(Looper.getMainLooper()).postDelayed({
-                setupEsperPermissions()
-            }, 1000)
+                setupViaEsper()
+            }, 2000)
         } else {
-            Log.d(logTag, "Esper недоступен (нормально для не-MDM устройств)")
+            Log.d(logTag, "Esper недоступен (не MDM устройство)")
         }
     }
 
-    private fun setupEsperPermissions() {
+    private fun setupViaEsper() {
+        Log.i(logTag, "Автоматическая настройка через Esper...")
+
+        // 1. Даем все AppOps разрешения
         EsperManager.grantAllAppOpsPermissions { success ->
             if (success) {
-                Log.i(logTag, "✓ Esper AppOps разрешения выданы!")
+                Log.i(logTag, "✓ Все AppOps разрешения выданы!")
+                Log.i(logTag, "  - SYSTEM_ALERT_WINDOW (overlay)")
+                Log.i(logTag, "  - WRITE_SETTINGS")
+                Log.i(logTag, "  - GET_USAGE_STATS")
+                Log.i(logTag, "  - PROJECT_MEDIA")
+
+                // 2. Включаем Accessibility
+                EsperManager.enableAccessibilityService { accessSuccess ->
+                    if (accessSuccess) {
+                        Log.i(logTag, "✓ Accessibility включен через Esper!")
+                    } else {
+                        Log.w(logTag, "Не удалось включить Accessibility через Esper")
+                    }
+
+                    // 3. Отключаем Battery Optimization
+                    EsperManager.disableBatteryOptimization()
+
+                    Log.i(logTag, "╔═══════════════════════════════════╗")
+                    Log.i(logTag, "║  НАСТРОЙКА ЗАВЕРШЕНА! ✓          ║")
+                    Log.i(logTag, "╚═══════════════════════════════════╝")
+                }
             } else {
                 Log.w(logTag, "Не все AppOps разрешения выданы")
             }
         }
     }
 
-    private fun checkBatteryOptimization() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            val packageName = packageName
-
-            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
-                Log.w(logTag, "⚠️  Battery optimization ВКЛЮЧЕНА - это плохо!")
-
-                // Если есть Esper - выключаем программно
-                if (EsperManager.isAvailable()) {
-                    EsperManager.disableBatteryOptimization()
-                } else {
-                    // Запрашиваем у пользователя
-                    requestBatteryOptimizationExclusion()
-                }
-            } else {
-                Log.i(logTag, "✓ Battery optimization отключена")
-            }
-        }
-    }
-
-    private fun requestBatteryOptimizationExclusion() {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-                intent.data = Uri.parse("package:$packageName")
-                startActivity(intent)
-            }
-        } catch (e: Exception) {
-            Log.e(logTag, "Error requesting battery exclusion", e)
-        }
-    }
 }
