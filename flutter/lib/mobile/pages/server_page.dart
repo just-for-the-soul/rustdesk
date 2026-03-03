@@ -515,6 +515,35 @@ class _PermissionCheckerState extends State<PermissionChecker> {
 
   // Периодическая проверка статуса
   void _startAccessibilityStatusPolling() {
+    Timer.periodic(Duration(seconds: 2), (timer) async {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+
+      try {
+        final isEnabled = await platformFFI.invokeMethod('check_accessibility_enabled');
+
+        if (isEnabled) {
+          timer.cancel();
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(translate("✓ Accessibility enabled successfully!")),
+                backgroundColor: Colors.green,
+                duration: Duration(seconds: 3),
+              ),
+            );
+          }
+
+          // Обновляем UI
+          setState(() {});
+        }
+      } catch (e) {
+        debugPrint("Error checking status: $e");
+      }
+    });
   }
 
 }
