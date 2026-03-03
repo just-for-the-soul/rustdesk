@@ -489,6 +489,34 @@ class _PermissionCheckerState extends State<PermissionChecker> {
                   ),
                   );
   }
+
+
+  Future<void> _openAccessibilitySettings() async {
+    try {
+      await platformFFI.invokeMethod('open_accessibility_settings');
+
+      // Показываем подсказку
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(translate("Find RustDesk in the list and enable it")),
+            duration: Duration(seconds: 5),
+            backgroundColor: Colors.blue,
+          ),
+        );
+      }
+
+      // Начинаем проверять статус каждые 2 секунды
+      _startAccessibilityStatusPolling();
+    } catch (e) {
+      debugPrint("Error opening settings: $e");
+    }
+  }
+
+  // Периодическая проверка статуса
+  void _startAccessibilityStatusPolling() {
+  }
+
 }
 
 class PermissionRow extends StatelessWidget {
