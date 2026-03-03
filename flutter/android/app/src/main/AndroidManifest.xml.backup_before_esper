@@ -1,29 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
     package="com.carriez.flutter_hbb">
 
-    <!-- ═══════════════════════════════════════════════════════════ -->
-    <!-- ESPER SDK: Queries для Android 11+                          -->
-    <!-- ═══════════════════════════════════════════════════════════ -->
-    <queries>
-        <!-- Для Esper MDM -->
-        <package android:name="io.shoonya.shoonyadpc"/>
-        
-        <!-- Existing: Custom Tabs -->
-        <intent>
-            <action android:name="android.support.customtabs.action.CustomTabsService" />
-        </intent>
-    </queries>
-
-    <!-- ═══════════════════════════════════════════════════════════ -->
-    <!-- ESPER SDK: Override для библиотек                           -->
-    <!-- ═══════════════════════════════════════════════════════════ -->
-    <uses-sdk tools:overrideLibrary="esper.library" />
-
-    <!-- ═══════════════════════════════════════════════════════════ -->
-    <!-- PERMISSIONS                                                  -->
-    <!-- ═══════════════════════════════════════════════════════════ -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
@@ -37,6 +15,13 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
+    <queries>
+        <intent>
+            <!-- https://developer.android.com/training/package-visibility/use-cases#open-urls-custom-tabs -->
+            <action android:name="android.support.customtabs.action.CustomTabsService" />
+        </intent>
+    </queries>
+
     <application
         android:name=".MainApplication"
         android:icon="@mipmap/ic_launcher"
@@ -45,7 +30,6 @@
         android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true">
 
-        <!-- BootReceiver -->
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
@@ -53,11 +37,11 @@
             <intent-filter android:priority="1000">
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <!--ACTION_BOOT_COMPLETED for debug test on no root device-->
                 <action android:name="com.carriez.flutter_hbb.DEBUG_BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
 
-        <!-- InputService (Accessibility) -->
         <service
             android:name=".InputService"
             android:enabled="true"
@@ -73,7 +57,6 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
-        <!-- MainActivity -->
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode|navigation"
@@ -84,10 +67,11 @@
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
+
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Deep linking -->
+            <!-- Intent for deep linking-->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -96,24 +80,24 @@
             </intent-filter>
         </activity>
 
-        <!-- PermissionRequestTransparentActivity -->
         <activity
             android:name=".PermissionRequestTransparentActivity"
             android:excludeFromRecents="true"
             android:theme="@style/Transparent" />
 
-        <!-- MainService -->
         <service
             android:name=".MainService"
             android:enabled="true"
             android:foregroundServiceType="mediaProjection" />
 
-        <!-- FloatingWindowService -->
         <service
             android:name=".FloatingWindowService"
             android:enabled="true" />
 
-        <!-- Flutter metadata -->
+        <!--
+ Don't delete the meta-data below.
+             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java
+        -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />

@@ -63,11 +63,6 @@ repositories {
         url = findRustlsPlatformVerifierMavenDir()
         metadataSources.artifact()
     }
-
-    maven {
-        url 'https://artifact.esper.io/artifactory/esper-device-sdk/'
-    }
-
 }
 
 protobuf {
@@ -141,7 +136,7 @@ dependencies {
     implementation "rustls:rustls-platform-verifier:0.1.1"
 
 
-    implementation 'io.esper.devicesdk:app-core:1.6.8675'
-    // Может также понадобиться:
-    implementation 'androidx.work:work-runtime-ktx:2.8.1'
+    implementation 'io.esper.devicesdk:app:3.3.0101.27+'
+    implementation 'androidx.annotation:annotation:1.1.0'
+    implementation "androidx.core:core-ktx:1.5.0"
 }
