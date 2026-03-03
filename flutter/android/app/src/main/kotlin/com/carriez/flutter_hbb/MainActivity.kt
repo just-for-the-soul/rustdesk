@@ -280,6 +280,21 @@ class MainActivity : FlutterActivity() {
                 }
 
 
+
+                "open_accessibility_settings" -> {
+                    Log.d(logTag, "Opening Accessibility Settings")
+
+                    try {
+                        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                        intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        startActivity(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e(logTag, "Error opening accessibility settings", e)
+                        result.error("ERROR", e.message, null)
+                    }
+                }
+
                 "esper_get_status" -> {
                     val status = EsperManager.getStatus()
                     result.success(status)
