@@ -11,6 +11,9 @@ import ffi.FFI
 
 import android.os.Handler
 import android.os.Looper
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 
 import android.content.ComponentName
 import android.content.Context
