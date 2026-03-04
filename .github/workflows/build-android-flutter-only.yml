@@ -1,0 +1,175 @@
+name: Build Android APK (Flutter Only - Fast)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+      - add_esper_sdk
+    paths:
+      - 'flutter/**'
+      - '!flutter/lib/generated_bridge.dart'
+      - '.github/workflows/build-android-flutter-only.yml'
+
+env:
+  FLUTTER_VERSION: "3.24.5"
+  VERSION: "1.4.5"
+
+jobs:
+  build-flutter-only:
+    runs-on: ubuntu-24.04
+    
+    steps:
+    - name: Checkout source code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1  # Shallow clone для скорости
+
+    - name: Install Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        channel: "stable"
+        flutter-version: ${{ env.FLUTTER_VERSION }}
+
+    - name: Patch Flutter
+      run: |
+        cd $(dirname $(dirname $(which flutter)))
+        [[ "3.24.5" == "${{ env.FLUTTER_VERSION }}" ]] && \
+          git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff || true
+
+    # ========================================
+    # ПРОВЕРКА: Есть ли pre-compiled бинарники?
+    # ========================================
+    - name: Check for pre-compiled libraries
+      id: check-libs
+      run: |
+        echo "Checking for pre-compiled native libraries..."
+        
+        REQUIRED_LIBS=(
+          "flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so"
+          "flutter/android/app/src/main/jniLibs/arm64-v8a/libc++_shared.so"
+          "flutter/android/app/src/main/jniLibs/armeabi-v7a/librustdesk.so"
+          "flutter/android/app/src/main/jniLibs/armeabi-v7a/libc++_shared.so"
+        )
+        
+        MISSING=0
+        for lib in "${REQUIRED_LIBS[@]}"; do
+          if [ ! -f "$lib" ]; then
+            echo "❌ Missing: $lib"
+            MISSING=$((MISSING + 1))
+          else
+            echo "✓ Found: $lib ($(stat -c%s "$lib" | numfmt --to=iec-i)B)"
+          fi
+        done
+        
+        if [ $MISSING -eq 0 ]; then
+          echo "✓ All native libraries found in repository!"
+          echo "libs_present=true" >> $GITHUB_OUTPUT
+        else
+          echo "❌ Missing $MISSING native libraries"
+          echo "⚠️  Run full build workflow first to generate libraries"
+          echo "libs_present=false" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+
+    - name: Check for bridge files
+      id: check-bridge
+      run: |
+        echo "Checking for FFI bridge files..."
+        
+        if [ -f "flutter/lib/generated_bridge.dart" ]; then
+          echo "✓ Bridge file found: generated_bridge.dart"
+          echo "  Size: $(stat -c%s flutter/lib/generated_bridge.dart | numfmt --to=iec-i)B"
+          echo "  Lines: $(wc -l < flutter/lib/generated_bridge.dart)"
+          echo "bridge_present=true" >> $GITHUB_OUTPUT
+        else
+          echo "❌ Missing: flutter/lib/generated_bridge.dart"
+          echo "⚠️  Run full build workflow first to generate bridge files"
+          echo "bridge_present=false" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+
+    # ========================================
+    # БЫСТРАЯ СБОРКА: Только Flutter!
+    # ========================================
+    - name: Build APK (Flutter Only - Fast!)
+      env:
+        JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+      run: |
+        echo "╔═══════════════════════════════════════════════════════════╗"
+        echo "║   FAST BUILD MODE - Using pre-compiled libraries          ║"
+        echo "║   Skipping: Rust compilation (~35 minutes saved!)         ║"
+        echo "╚═══════════════════════════════════════════════════════════╝"
+        echo ""
+        
+        # Установить Java в PATH
+        export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
+        
+        # Настройки Gradle для быстрой сборки
+        sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
+        sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
+        
+        # Показываем что используем
+        echo "Using pre-compiled libraries:"
+        ls -lh flutter/android/app/src/main/jniLibs/*/*.so
+        
+        echo ""
+        echo "Using pre-compiled bridge:"
+        head -5 flutter/lib/generated_bridge.dart
+        
+        # Flutter сборка
+        cd flutter
+        flutter pub get
+        
+        echo ""
+        echo "Building APK..."
+        time flutter build apk --release --target-platform android-arm64,android-arm
+        
+        # Результат
+        mkdir -p ../signed-apk
+        mv build/app/outputs/flutter-apk/app-release.apk \
+           ../signed-apk/rustdesk-${{ env.VERSION }}-universal-fast.apk
+        
+        echo ""
+        echo "✓ APK built successfully!"
+        ls -lh ../signed-apk/*.apk
+
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      if: success()
+      with:
+        name: rustdesk-${{ env.VERSION }}-flutter-only-apk
+        path: signed-apk/*.apk
+        retention-days: 7
+
+    # ========================================
+    # Summary
+    # ========================================
+    - name: Build Summary
+      if: always()
+      run: |
+        echo "## 🚀 Fast Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Build Mode: **Flutter Only (Pre-compiled libraries)**" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **Time Saved:** ~35-40 minutes (Rust compilation skipped)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -f "signed-apk/rustdesk-${{ env.VERSION }}-universal-fast.apk" ]; then
+          APK_SIZE=$(stat -c%s "signed-apk/rustdesk-${{ env.VERSION }}-universal-fast.apk" | numfmt --to=iec-i)
+          echo "### 📦 APK Info:" >> $GITHUB_STEP_SUMMARY
+          echo "- **File:** \`rustdesk-${{ env.VERSION }}-universal-fast.apk\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Size:** $APK_SIZE" >> $GITHUB_STEP_SUMMARY
+          echo "- **Architectures:** arm64-v8a, armeabi-v7a" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🔧 Build Configuration:" >> $GITHUB_STEP_SUMMARY
+        echo "- **Flutter:** \`${{ env.FLUTTER_VERSION }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Version:** \`${{ env.VERSION }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📚 Used Pre-compiled Libraries:" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        ls -lh flutter/android/app/src/main/jniLibs/*/*.so 2>/dev/null || echo "Libraries not found"
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

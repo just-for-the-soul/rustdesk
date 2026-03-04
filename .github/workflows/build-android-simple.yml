@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - master
-      - add_esper_sdk
 
 env:
   RUST_VERSION: "1.75"
