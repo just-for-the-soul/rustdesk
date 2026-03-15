@@ -485,7 +485,7 @@ class _PermissionCheckerState extends State<PermissionChecker> {
               serverModel.mediaOk,
               serverModel.toggleService),
           // ── Capture method selector — всегда виден ──
-          _buildCaptureMethodSelector(context, serverModel.isStart),
+          _buildCaptureMethodSelector(context),
           PermissionRow(translate("Input Control"), serverModel.inputOk,
               serverModel.toggleInput),
           PermissionRow(translate("Transfer file"), serverModel.fileOk,
