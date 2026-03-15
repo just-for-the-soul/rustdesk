@@ -146,6 +146,7 @@ class InputService : AccessibilityService() {
     override fun onDestroy() {
         ctx = null
         XmlCapture.stop()
+        AutoClick.reset()
         keepAliveHandler.removeCallbacks(keepAliveRunnable)
         try { eventThread.quitSafely() } catch (_: Exception) {}
         Log.w(logTag, "onDestroy")
@@ -160,8 +161,12 @@ class InputService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         // Обрабатываем в отдельном потоке чтобы не блокировать main thread.
         // Блокировка main thread на >5с → Android помечает сервис "malfunctioning".
-        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            val pkg = event.packageName?.toString() ?: return
+        // Слушаем оба типа: STATE_CHANGED (новое окно) и WINDOWS_CHANGED (изменение в окне —
+        // например раскрытие списка "A single app" → "Entire screen")
+        val t = event.eventType
+        if (t == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+            t == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+            val pkg = event.packageName?.toString() ?: ""
             val source = event.source
             eventHandler.post {
                 try {
