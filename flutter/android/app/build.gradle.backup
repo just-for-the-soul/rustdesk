@@ -32,22 +32,8 @@ if (flutterVersionName == null) {
     flutterVersionName = '1.0'
 }
 
-// ════════════════════════════════════════════════════════════
-// ИСПРАВЛЕНО: Пропуск cargo metadata в fast build mode
-// ════════════════════════════════════════════════════════════
+// Add rustls-platform-verifier Android support
 String findRustlsPlatformVerifierMavenDir() {
-    // Проверяем SKIP_RUST_BUILD
-    def skipRustBuild = System.getenv("SKIP_RUST_BUILD") == "1"
-    
-    if (skipRustBuild) {
-        println("SKIP_RUST_BUILD=1 - Using fallback for rustls-platform-verifier")
-        
-        // Возвращаем fallback путь (не критично для сборки)
-        // Maven repo не используется в fast build
-        return file("../../target/debug").path
-    }
-    
-    // Обычная логика
     def dependencyText = providers.exec {
         it.workingDir = new File("../..")
         commandLine("cargo", "metadata", "--format-version", "1")
@@ -55,31 +41,27 @@ String findRustlsPlatformVerifierMavenDir() {
 
     def dependencyJson = new JsonSlurper().parseText(dependencyText)
     def pkg = dependencyJson.packages.find { it.name == "rustls-platform-verifier-android" }
-
+    
     if (pkg == null) {
-        throw new GradleException("rustls-platform-verifier-android package not found!")
+        throw new GradleException("rustls-platform-verifier-android package not found in cargo metadata!")
     }
-
+    
     def manifestPath = file(pkg.manifest_path)
     def mavenDir = new File(manifestPath.parentFile, "maven")
-
+    
     if (!mavenDir.exists()) {
         throw new GradleException("Maven directory not found at: ${mavenDir.path}")
     }
-
+    
     println("✓ Found rustls-platform-verifier maven repo at: ${mavenDir.path}")
     return mavenDir.path
 }
+
 
 repositories {
     maven {
         url = findRustlsPlatformVerifierMavenDir()
         metadataSources.artifact()
-    }
-    
-    // Добавляем Esper Maven repo
-    maven { 
-        url = uri("https://artifact.esper.io/artifactory/esper-device-sdk/") 
     }
 }
 
@@ -114,16 +96,12 @@ android {
     }
 
     defaultConfig {
+        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId "com.carriez.flutter_hbb"
         minSdkVersion 22
         targetSdkVersion 33
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
-        
-        // Указываем архитектуры
-        ndk {
-            abiFilters 'arm64-v8a', 'armeabi-v7a'
-        }
     }
 
     signingConfigs {
@@ -137,6 +115,8 @@ android {
 
     buildTypes {
         release {
+            // TODO: Add your own signing config for the release build.
+            // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig signingConfigs.release
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules'
         }
@@ -155,8 +135,4 @@ dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib") { version { strictly("1.9.10") } }
     implementation 'com.caverock:androidsvg-aar:1.4'
     implementation "rustls:rustls-platform-verifier:0.1.1"
-    
-    // Esper Device SDK
-    implementation 'io.esper.devicesdk:app:3.3.0101.27+'
-    implementation 'androidx.annotation:annotation:1.1.0'
 }
