@@ -49,6 +49,10 @@ object XmlCapture {
         }
         captureThread = HandlerThread("XmlCaptureThread").also { it.start() }
         captureHandler = Handler(captureThread!!.looper)
+        // Сообщаем Rust что видео-поток начинается — без этого клиент висит на "waiting for image"
+        FFI.setFrameRawEnable("video", true)
+        // Инициализируем размеры экрана на Rust-стороне (аналог refreshScreen в startCapture)
+        FFI.refreshScreen()
         scheduleNextFrame(service)
         Log.i(TAG, "started @ ${TARGET_FPS}fps")
     }
@@ -64,6 +68,8 @@ object XmlCapture {
         byteBuffer = null
         lastWidth = 0
         lastHeight = 0
+        // Сообщаем Rust что поток остановлен
+        FFI.setFrameRawEnable("video", false)
         Log.i(TAG, "stopped")
     }
 

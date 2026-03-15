@@ -9,11 +9,12 @@ import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodChannel
 
 /**
- * CaptureController — выбор метода захвата экрана.
+ * CaptureController — выбор и переключение метода захвата экрана.
  *
- * Метод сохраняется в SharedPreferences и переживает перезапуск.
  * Интеграция в MainActivity.configureFlutterEngine:
  *   CaptureController.init(this, flutterEngine.dartExecutor.binaryMessenger)
+ *
+ * Метод сохраняется в SharedPreferences и переживает перезапуск.
  */
 object CaptureController {
 
@@ -21,14 +22,16 @@ object CaptureController {
     const val CHANNEL = "com.carriez.flutter_hbb/capture"
     private const val PREFS_NAME = "capture_prefs"
     private const val KEY_METHOD = "capture_method"
-    const val METHOD_MP = "mp"
+    const val METHOD_MP  = "mp"
     const val METHOD_XML = "xml"
 
     var activeMethod: String = METHOD_MP
         private set
 
+    // Ссылка на MainService для управления VirtualDisplay
+    var mainService: MainService? = null
+
     fun init(context: Context, messenger: BinaryMessenger) {
-        // Восстанавливаем сохранённый выбор
         activeMethod = prefs(context).getString(KEY_METHOD, METHOD_MP) ?: METHOD_MP
 
         MethodChannel(messenger, CHANNEL).setMethodCallHandler { call, result ->
@@ -48,11 +51,10 @@ object CaptureController {
                     result.success(null)
                 }
                 "stopCapture" -> {
-                    if (XmlCapture.isActive()) XmlCapture.stop()
+                    XmlCapture.stop()
                     result.success(null)
                 }
                 "switchMethod" -> {
-                    // Переключение во время захвата
                     val method = call.arguments as? String ?: METHOD_MP
                     switchMethodDuringCapture(context, method)
                     result.success(null)
@@ -87,16 +89,33 @@ object CaptureController {
         if (XmlCapture.isActive()) XmlCapture.stop()
     }
 
+    /**
+     * Переключение метода во время активного захвата.
+     *
+     * MP → XML:
+     *   1. stopCapture() — убирает VirtualDisplay и красный значок в статус-баре
+     *   2. XmlCapture.start() — стартует XML захват с FFI.setFrameRawEnable("video", true)
+     *
+     * XML → MP:
+     *   1. XmlCapture.stop() — останавливает XML захват с FFI.setFrameRawEnable("video", false)
+     *   2. startCapture() — поднимает VirtualDisplay снова
+     */
     private fun switchMethodDuringCapture(context: Context, method: String) {
-        when {
-            method == METHOD_XML && activeMethod != METHOD_XML -> {
+        if (activeMethod == method) return
+
+        when (method) {
+            METHOD_XML -> {
+                // Останавливаем MP: снимаем VirtualDisplay → пропадёт значок записи экрана
+                mainService?.stopCapture()
                 setMethod(context, METHOD_XML)
                 startXmlIfNeeded(context)
             }
-            method == METHOD_MP && activeMethod != METHOD_MP -> {
+            METHOD_MP -> {
+                // Останавливаем XML capture
                 XmlCapture.stop()
                 setMethod(context, METHOD_MP)
-                // MP продолжает работать через VirtualDisplay — ничего дополнительно не нужно
+                // Поднимаем VirtualDisplay снова
+                mainService?.startCapture()
             }
         }
     }

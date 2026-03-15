@@ -174,10 +174,12 @@ class MainActivity : FlutterActivity() {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             Log.d(logTag, "onServiceConnected")
             mainService = (service as MainService.LocalBinder).getService()
+            CaptureController.mainService = mainService
         }
         override fun onServiceDisconnected(name: ComponentName?) {
             Log.d(logTag, "onServiceDisconnected")
             mainService = null
+            CaptureController.mainService = null
         }
     }
 
