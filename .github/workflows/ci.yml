@@ -15,7 +15,7 @@ on:
       - "README.md"
   push:
     branches:
-      - master
+      - temp_off_build
     paths-ignore:
       - ".github/**"
       - "docs/**"

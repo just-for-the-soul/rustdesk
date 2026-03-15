@@ -23,7 +23,24 @@ jobs:
     - name: Checkout source code
       uses: actions/checkout@v4
       with:
-        fetch-depth: 1  # Shallow clone для скорости
+        fetch-depth: 1
+
+    # ========================================
+    # ДОБАВИТЬ: Установка Java
+    # ========================================
+    - name: Setup Java 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Verify Java Installation
+      run: |
+        echo "Java version:"
+        java -version
+        echo ""
+        echo "JAVA_HOME: $JAVA_HOME"
+        ls -la $JAVA_HOME || echo "JAVA_HOME not set properly"
 
     - name: Install Flutter
       uses: subosito/flutter-action@v2
@@ -37,9 +54,6 @@ jobs:
         [[ "3.24.5" == "${{ env.FLUTTER_VERSION }}" ]] && \
           git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff || true
 
-    # ========================================
-    # ПРОВЕРКА: Есть ли pre-compiled бинарники?
-    # ========================================
     - name: Check for pre-compiled libraries
       id: check-libs
       run: |
@@ -63,11 +77,11 @@ jobs:
         done
         
         if [ $MISSING -eq 0 ]; then
-          echo "✓ All native libraries found in repository!"
+          echo "✓ All native libraries found!"
           echo "libs_present=true" >> $GITHUB_OUTPUT
         else
-          echo "❌ Missing $MISSING native libraries"
-          echo "⚠️  Run full build workflow first to generate libraries"
+          echo "❌ Missing $MISSING libraries"
+          echo "⚠️  Run full build workflow first"
           echo "libs_present=false" >> $GITHUB_OUTPUT
           exit 1
         fi
@@ -79,51 +93,37 @@ jobs:
         
         if [ -f "flutter/lib/generated_bridge.dart" ]; then
           echo "✓ Bridge file found: generated_bridge.dart"
-          echo "  Size: $(stat -c%s flutter/lib/generated_bridge.dart | numfmt --to=iec-i)B"
-          echo "  Lines: $(wc -l < flutter/lib/generated_bridge.dart)"
           echo "bridge_present=true" >> $GITHUB_OUTPUT
         else
           echo "❌ Missing: flutter/lib/generated_bridge.dart"
-          echo "⚠️  Run full build workflow first to generate bridge files"
           echo "bridge_present=false" >> $GITHUB_OUTPUT
           exit 1
         fi
 
-    # ========================================
-    # БЫСТРАЯ СБОРКА: Только Flutter!
-    # ========================================
-    - name: Build APK (Flutter Only - Fast!)
-      env:
-        JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+    - name: Build APK (Flutter Only)
       run: |
         echo "╔═══════════════════════════════════════════════════════════╗"
-        echo "║   FAST BUILD MODE - Using pre-compiled libraries          ║"
-        echo "║   Skipping: Rust compilation (~35 minutes saved!)         ║"
+        echo "║   FAST BUILD - Using pre-compiled libraries               ║"
         echo "╚═══════════════════════════════════════════════════════════╝"
         echo ""
         
-        # Установить Java в PATH
-        export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
+        # Gradle настройки
+        sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" \
+          ./flutter/android/gradle.properties
+        sed -i "s/signingConfigs.release/signingConfigs.debug/g" \
+          ./flutter/android/app/build.gradle
         
-        # Настройки Gradle для быстрой сборки
-        sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
-        sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
-        
-        # Показываем что используем
+        # Показываем библиотеки
         echo "Using pre-compiled libraries:"
         ls -lh flutter/android/app/src/main/jniLibs/*/*.so
         
-        echo ""
-        echo "Using pre-compiled bridge:"
-        head -5 flutter/lib/generated_bridge.dart
-        
-        # Flutter сборка
+        # Flutter build
         cd flutter
         flutter pub get
         
         echo ""
         echo "Building APK..."
-        time flutter build apk --release --target-platform android-arm64,android-arm
+        flutter build apk --release --target-platform android-arm64,android-arm
         
         # Результат
         mkdir -p ../signed-apk
@@ -142,9 +142,6 @@ jobs:
         path: signed-apk/*.apk
         retention-days: 7
 
-    # ========================================
-    # Summary
-    # ========================================
     - name: Build Summary
       if: always()
       run: |
@@ -152,7 +149,7 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### Build Mode: **Flutter Only (Pre-compiled libraries)**" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "✅ **Time Saved:** ~35-40 minutes (Rust compilation skipped)" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **Time Saved:** ~35-40 minutes" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
         if [ -f "signed-apk/rustdesk-${{ env.VERSION }}-universal-fast.apk" ]; then
@@ -160,7 +157,7 @@ jobs:
           echo "### 📦 APK Info:" >> $GITHUB_STEP_SUMMARY
           echo "- **File:** \`rustdesk-${{ env.VERSION }}-universal-fast.apk\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Size:** $APK_SIZE" >> $GITHUB_STEP_SUMMARY
-          echo "- **Architectures:** arm64-v8a, armeabi-v7a" >> $GITHUB_STEP_SUMMARY
+          echo "- **Java:** OpenJDK 17 (Temurin)" >> $GITHUB_STEP_SUMMARY
         fi
         
         echo "" >> $GITHUB_STEP_SUMMARY
@@ -168,8 +165,3 @@ jobs:
         echo "- **Flutter:** \`${{ env.FLUTTER_VERSION }}\`" >> $GITHUB_STEP_SUMMARY
         echo "- **Version:** \`${{ env.VERSION }}\`" >> $GITHUB_STEP_SUMMARY
         echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### 📚 Used Pre-compiled Libraries:" >> $GITHUB_STEP_SUMMARY
-        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-        ls -lh flutter/android/app/src/main/jniLibs/*/*.so 2>/dev/null || echo "Libraries not found"
-        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
