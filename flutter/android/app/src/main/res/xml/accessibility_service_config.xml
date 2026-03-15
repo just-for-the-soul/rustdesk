@@ -1,7 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Единый конфиг для InputService (input control + XML capture).
+    Размещение: flutter/android/app/src/main/res/xml/accessibility_service_config.xml
+-->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowsChanged"
+    android:accessibilityEventTypes="typeWindowsChanged|typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
     android:canRetrieveWindowContent="true"
-    android:accessibilityFlags="flagDefault"
+    android:canPerformGestures="true"
+    android:canRequestFilterKeyEvents="true"
     android:notificationTimeout="50"
-    android:description="@string/accessibility_service_description"
-    android:canPerformGestures="true"/>
+    android:description="@string/accessibility_service_description" />
