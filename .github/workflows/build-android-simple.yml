@@ -3,7 +3,9 @@ name: Build Android APK (Simple)
 on:
   workflow_dispatch:
   push:
-    branches: [ master new_main ]
+    branches:
+      - master
+      - new_main
 
 env:
   RUST_VERSION: "1.75"
