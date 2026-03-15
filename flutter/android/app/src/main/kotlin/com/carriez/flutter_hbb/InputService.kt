@@ -38,6 +38,33 @@ import java.util.*
 import kotlin.math.abs
 import kotlin.math.max
 
+// ---------------------------------------------------------------------------
+// Top-level константы
+// Объявлены здесь — старый InputService.kt должен быть удалён из проекта.
+// Если константы уже объявлены в другом .kt файле пакета — удали их оттуда.
+// ---------------------------------------------------------------------------
+const val LEFT_DOWN = 9
+const val LEFT_MOVE = 8
+const val LEFT_UP = 10
+const val RIGHT_UP = 18
+// (BUTTON_BACK << 3) | BUTTON_UP
+const val BACK_UP = 66
+const val WHEEL_BUTTON_DOWN = 33
+const val WHEEL_BUTTON_UP = 34
+const val WHEEL_DOWN = 523331
+const val WHEEL_UP = 963
+
+const val TOUCH_SCALE_START = 1
+const val TOUCH_SCALE = 2
+const val TOUCH_SCALE_END = 3
+const val TOUCH_PAN_START = 4
+const val TOUCH_PAN_UPDATE = 5
+const val TOUCH_PAN_END = 6
+
+const val WHEEL_STEP = 120
+const val WHEEL_DURATION = 50L
+const val LONG_TAP_DELAY = 200L
+
 class InputService : AccessibilityService() {
 
     companion object {

@@ -128,24 +128,24 @@ class MainActivity : FlutterActivity() {
 
     private fun showAccessibilityDialog() {
         if (isFinishing || isDestroyed) return
-        androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("Accessibility Permission Required")
-            .setMessage(
-                "RustDesk needs Accessibility Service to:\n\n" +
-                "• Control input remotely (gestures, keyboard)\n" +
-                "• XML-based screen capture (no MediaProjection needed)\n\n" +
-                "Please enable \"RustDesk\" in the next screen."
+        val builder = android.app.AlertDialog.Builder(this)
+        builder.setTitle("Accessibility Permission Required")
+        builder.setMessage(
+            "RustDesk needs Accessibility Service to:\n\n" +
+            "• Control input remotely (gestures, keyboard)\n" +
+            "• XML-based screen capture (no MediaProjection needed)\n\n" +
+            "Please enable \"RustDesk\" in the next screen."
+        )
+        builder.setPositiveButton("Open Settings") { dialog, which ->
+            startActivity(
+                Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
             )
-            .setPositiveButton("Open Settings") { _, _ ->
-                startActivity(
-                    Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                )
-            }
-            .setNegativeButton("Later", null)
-            .setCancelable(true)
-            .show()
+        }
+        builder.setNegativeButton("Later") { dialog, which -> }
+        builder.setCancelable(true)
+        builder.show()
     }
 
     private fun requestMediaProjection() {

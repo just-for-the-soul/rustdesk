@@ -42,7 +42,7 @@ object XmlCapture {
     // Public API
     // -----------------------------------------------------------------------
 
-    fun start(service: MainAccessibilityService) {
+    fun start(service: InputService) {
         if (isRunning.getAndSet(true)) {
             Log.w(TAG, "already running")
             return
@@ -73,7 +73,7 @@ object XmlCapture {
     // Capture loop
     // -----------------------------------------------------------------------
 
-    private fun scheduleNextFrame(service: MainAccessibilityService) {
+    private fun scheduleNextFrame(service: InputService) {
         if (!isRunning.get()) return
         captureHandler?.postDelayed({
             captureFrame(service)
@@ -81,7 +81,7 @@ object XmlCapture {
         }, FRAME_INTERVAL_MS)
     }
 
-    private fun captureFrame(service: MainAccessibilityService) {
+    private fun captureFrame(service: InputService) {
         try {
             // Берём размеры из того же SCREEN_INFO что использует MP pipeline
             val w = SCREEN_INFO.width
