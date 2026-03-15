@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/services.dart';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/main.dart';
@@ -33,6 +35,13 @@ class ServerModel with ChangeNotifier {
   bool _showElevation = false;
   bool hideCm = false;
   int _connectStatus = 0; // Rendezvous Server status
+
+  // Capture method: 'mp' = MediaProjection, 'xml' = XML/Accessibility
+  String _captureMethod = 'mp';
+  String get captureMethod => _captureMethod;
+
+  static const _captureChannel =
+      MethodChannel('com.carriez.flutter_hbb/capture');
   String _verificationMethod = "";
   String _temporaryPasswordLength = "";
   bool _allowNumericOneTimePassword = false;
@@ -183,6 +192,8 @@ class ServerModel with ChangeNotifier {
         if (await bind.optionSynced()) {
           await timerCallback();
         }
+        // Загружаем сохранённый метод захвата
+        await _loadCaptureMethod();
       });
       Timer.periodic(Duration(milliseconds: 500), (timer) async {
         await timerCallback();
@@ -446,12 +457,54 @@ class ServerModel with ChangeNotifier {
     }
   }
 
+  /// Запуск с явным выбором метода — вызывается из двух кнопок на UI.
+  Future<void> startServiceWithMethod(String method) async {
+    await _captureChannel.invokeMethod(
+        method == 'xml' ? 'setXmlCapture' : 'setMediaProjection');
+    _captureMethod = method;
+
+    await checkRequestNotificationPermission();
+    if (bind.mainGetLocalOption(key: kOptionDisableFloatingWindow) != 'Y') {
+      await checkFloatingWindowPermission();
+    }
+    if (!await AndroidPermissionManager.check(kManageExternalStorage)) {
+      await AndroidPermissionManager.request(kManageExternalStorage);
+    }
+    await startService(useXml: method == 'xml');
+  }
+
+  /// Переключение метода захвата прямо во время работы сервиса.
+  Future<void> switchCaptureMethod(String method) async {
+    if (_captureMethod == method) return;
+    try {
+      await _captureChannel.invokeMethod('switchMethod', method);
+      _captureMethod = method;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('switchCaptureMethod error: $e');
+    }
+  }
+
+  Future<void> _loadCaptureMethod() async {
+    try {
+      final m = await _captureChannel.invokeMethod<String>('getCaptureMethod');
+      if (m != null && m != _captureMethod) {
+        _captureMethod = m;
+        notifyListeners();
+      }
+    } catch (_) {}
+  }
+
   /// Start the screen sharing service.
-  Future<void> startService() async {
+  Future<void> startService({bool useXml = false}) async {
     _isStart = true;
     notifyListeners();
     parent.target?.ffiModel.updateEventListener(parent.target!.sessionId, "");
-    await parent.target?.invokeMethod("init_service");
+    if (useXml) {
+      await parent.target?.invokeMethod("init_service_xml");
+    } else {
+      await parent.target?.invokeMethod("init_service");
+    }
     // ugly is here, because for desktop, below is useless
     await bind.mainStartService();
     updateClientState();

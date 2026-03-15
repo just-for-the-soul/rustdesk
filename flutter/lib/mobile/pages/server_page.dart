@@ -249,13 +249,43 @@ class ServiceNotRunningNotification extends StatelessWidget {
             Text(translate("android_start_service_tip"),
                     style:
                         const TextStyle(fontSize: 12, color: MyTheme.darkGray))
-                .marginOnly(bottom: 8),
-            ElevatedButton.icon(
-                icon: const Icon(Icons.play_arrow),
-                onPressed: () {
-                  serverModel.toggleService();
-                },
-                label: Text(translate("Start service")))
+                .marginOnly(bottom: 12),
+            // ── Две кнопки запуска ──
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    icon: const Icon(Icons.cast_connected, size: 18),
+                    onPressed: () =>
+                        serverModel.startServiceWithMethod('mp'),
+                    label: Text(translate("MediaProjection"),
+                        style: const TextStyle(fontSize: 13)),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    icon: const Icon(Icons.account_tree_outlined, size: 18),
+                    onPressed: () =>
+                        serverModel.startServiceWithMethod('xml'),
+                    label: Text(translate("XML Capture"),
+                        style: const TextStyle(fontSize: 13)),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            // Подсказка для XML
+            Row(children: [
+              const Icon(Icons.info_outline, size: 13, color: MyTheme.darkGray)
+                  .marginOnly(right: 4),
+              Expanded(
+                child: Text(
+                  translate("XML Capture requires Accessibility Service"),
+                  style: const TextStyle(fontSize: 11, color: MyTheme.darkGray),
+                ),
+              ),
+            ]),
           ],
         ));
   }
@@ -408,8 +438,16 @@ class _PermissionCheckerState extends State<PermissionChecker> {
     if (_captureMethodLoading || _captureMethod == method) return;
     setState(() => _captureMethodLoading = true);
     try {
-      await _captureChannel.invokeMethod(
-          method == 'xml' ? 'setXmlCapture' : 'setMediaProjection');
+      final serverModel =
+          Provider.of<ServerModel>(context, listen: false);
+      if (serverModel.isStart) {
+        // Сервис уже запущен — переключаем на лету
+        await serverModel.switchCaptureMethod(method);
+      } else {
+        // Сервис не запущен — просто сохраняем выбор
+        await _captureChannel.invokeMethod(
+            method == 'xml' ? 'setXmlCapture' : 'setMediaProjection');
+      }
       if (mounted) setState(() => _captureMethod = method);
     } catch (e) {
       debugPrint('setCaptureMethod error: $e');
@@ -424,6 +462,10 @@ class _PermissionCheckerState extends State<PermissionChecker> {
   @override
   Widget build(BuildContext context) {
     final serverModel = Provider.of<ServerModel>(context);
+    // Синхронизируем локальный стейт с моделью
+    if (serverModel.captureMethod != _captureMethod && !_captureMethodLoading) {
+      _captureMethod = serverModel.captureMethod;
+    }
     final hasAudioPermission = androidVersion >= 30;
     return PaddingCard(
         title: translate("Permissions"),
@@ -442,8 +484,8 @@ class _PermissionCheckerState extends State<PermissionChecker> {
               translate("Screen Capture"),
               serverModel.mediaOk,
               serverModel.toggleService),
-          // ── Capture method selector (показывается только если capture активен) ──
-          if (serverModel.mediaOk) _buildCaptureMethodSelector(context),
+          // ── Capture method selector — всегда виден ──
+          _buildCaptureMethodSelector(context, serverModel.isStart),
           PermissionRow(translate("Input Control"), serverModel.inputOk,
               serverModel.toggleInput),
           PermissionRow(translate("Transfer file"), serverModel.fileOk,

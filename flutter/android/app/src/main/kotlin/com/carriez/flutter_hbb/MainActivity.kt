@@ -17,6 +17,8 @@ import android.content.ClipboardManager
 import android.os.Bundle
 import android.os.Build
 import android.os.IBinder
+import android.provider.Settings
+import android.text.TextUtils
 import android.util.Log
 import android.view.WindowManager
 import android.media.MediaCodecInfo
@@ -40,7 +42,7 @@ class MainActivity : FlutterActivity() {
         var flutterMethodChannel: MethodChannel? = null
         private var _rdClipboardManager: RdClipboardManager? = null
         val rdClipboardManager: RdClipboardManager?
-            get() = _rdClipboardManager;
+            get() = _rdClipboardManager
     }
 
     private val channelTag = "mChannel"
@@ -62,10 +64,10 @@ class MainActivity : FlutterActivity() {
             channelTag
         )
         initFlutterChannel(flutterMethodChannel!!)
+        // Инициализируем CaptureController с MethodChannel
+        CaptureController.init(this, flutterEngine.dartExecutor.binaryMessenger)
         thread {
-            try {
-                setCodecInfo()
-            } catch (e: Exception) {
+            try { setCodecInfo() } catch (e: Exception) {
                 Log.e("MainActivity", "Failed to setCodecInfo: ${e.message}", e)
             }
         }
@@ -82,6 +84,70 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        if (_rdClipboardManager == null) {
+            _rdClipboardManager = RdClipboardManager(
+                getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            )
+            FFI.setClipboardManager(_rdClipboardManager!!)
+        }
+        // Запрашиваем Accessibility при первом запуске
+        requestAccessibilityIfNeeded()
+    }
+
+    /**
+     * Проверяем включён ли наш InputService в Accessibility.
+     * Если нет — показываем диалог с объяснением и открываем настройки.
+     * Проверка делается только один раз (SharedPreferences flag).
+     */
+    private fun requestAccessibilityIfNeeded() {
+        val prefs = getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
+        val alreadyAsked = prefs.getBoolean("accessibility_requested", false)
+        if (alreadyAsked && isAccessibilityEnabled()) return
+
+        if (!isAccessibilityEnabled()) {
+            prefs.edit().putBoolean("accessibility_requested", true).apply()
+            // Небольшая задержка чтобы Activity успела создаться
+            android.os.Handler(mainLooper).postDelayed({
+                showAccessibilityDialog()
+            }, 800)
+        }
+    }
+
+    private fun isAccessibilityEnabled(): Boolean {
+        val expectedService = "$packageName/${InputService::class.java.canonicalName}"
+        val enabledServices = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        return enabledServices.split(":").any {
+            it.equals(expectedService, ignoreCase = true)
+        }
+    }
+
+    private fun showAccessibilityDialog() {
+        if (isFinishing || isDestroyed) return
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Accessibility Permission Required")
+            .setMessage(
+                "RustDesk needs Accessibility Service to:\n\n" +
+                "• Control input remotely (gestures, keyboard)\n" +
+                "• XML-based screen capture (no MediaProjection needed)\n\n" +
+                "Please enable \"RustDesk\" in the next screen."
+            )
+            .setPositiveButton("Open Settings") { _, _ ->
+                startActivity(
+                    Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    }
+                )
+            }
+            .setNegativeButton("Later", null)
+            .setCancelable(true)
+            .show()
+    }
+
     private fun requestMediaProjection() {
         val intent = Intent(this, PermissionRequestTransparentActivity::class.java).apply {
             action = ACT_REQUEST_MEDIA_PROJECTION
@@ -91,34 +157,24 @@ class MainActivity : FlutterActivity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQ_INVOKE_PERMISSION_ACTIVITY_MEDIA_PROJECTION && resultCode == RES_FAILED) {
+        if (requestCode == REQ_INVOKE_PERMISSION_ACTIVITY_MEDIA_PROJECTION
+            && resultCode == RES_FAILED
+        ) {
             flutterMethodChannel?.invokeMethod("on_media_projection_canceled", null)
-        }
-    }
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        if (_rdClipboardManager == null) {
-            _rdClipboardManager = RdClipboardManager(getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
-            FFI.setClipboardManager(_rdClipboardManager!!)
         }
     }
 
     override fun onDestroy() {
         Log.e(logTag, "onDestroy")
-        mainService?.let {
-            unbindService(serviceConnection)
-        }
+        mainService?.let { unbindService(serviceConnection) }
         super.onDestroy()
     }
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             Log.d(logTag, "onServiceConnected")
-            val binder = service as MainService.LocalBinder
-            mainService = binder.getService()
+            mainService = (service as MainService.LocalBinder).getService()
         }
-
         override fun onServiceDisconnected(name: ComponentName?) {
             Log.d(logTag, "onServiceDisconnected")
             mainService = null
@@ -127,7 +183,6 @@ class MainActivity : FlutterActivity() {
 
     private fun initFlutterChannel(flutterMethodChannel: MethodChannel) {
         flutterMethodChannel.setMethodCallHandler { call, result ->
-            // make sure result will be invoked, otherwise flutter will await forever
             when (call.method) {
                 "init_service" -> {
                     Intent(activity, MainService::class.java).also {
@@ -140,51 +195,53 @@ class MainActivity : FlutterActivity() {
                     requestMediaProjection()
                     result.success(true)
                 }
-                "start_capture" -> {
-                    mainService?.let {
-                        result.success(it.startCapture())
-                    } ?: let {
-                        result.success(false)
+                // Новый метод: запуск через XML capture (без MediaProjection)
+                "init_service_xml" -> {
+                    Intent(activity, MainService::class.java).also {
+                        bindService(it, serviceConnection, Context.BIND_AUTO_CREATE)
                     }
+                    if (!isAccessibilityEnabled()) {
+                        showAccessibilityDialog()
+                        result.success(false)
+                        return@setMethodCallHandler
+                    }
+                    // Стартуем MainService без MediaProjection
+                    // (он нужен для audio, file transfer и т.д.)
+                    val serviceIntent = Intent(activity, MainService::class.java)
+                    startService(serviceIntent)
+                    // Запускаем XmlCapture через CaptureController
+                    CaptureController.startXmlIfNeeded(this)
+                    result.success(true)
+                }
+                "start_capture" -> {
+                    mainService?.let { result.success(it.startCapture()) }
+                        ?: result.success(false)
                 }
                 "stop_service" -> {
-                    Log.d(logTag, "Stop service")
-                    mainService?.let {
-                        it.destroy()
-                        result.success(true)
-                    } ?: let {
-                        result.success(false)
-                    }
+                    CaptureController.stopXml()
+                    mainService?.let { it.destroy(); result.success(true) }
+                        ?: result.success(false)
                 }
                 "check_permission" -> {
                     if (call.arguments is String) {
                         result.success(XXPermissions.isGranted(context, call.arguments as String))
-                    } else {
-                        result.success(false)
-                    }
+                    } else result.success(false)
                 }
                 "request_permission" -> {
                     if (call.arguments is String) {
                         requestPermission(context, call.arguments as String)
                         result.success(true)
-                    } else {
-                        result.success(false)
-                    }
+                    } else result.success(false)
                 }
                 START_ACTION -> {
                     if (call.arguments is String) {
                         startAction(context, call.arguments as String)
                         result.success(true)
-                    } else {
-                        result.success(false)
-                    }
+                    } else result.success(false)
                 }
                 "check_video_permission" -> {
-                    mainService?.let {
-                        result.success(it.checkMediaPermission())
-                    } ?: let {
-                        result.success(false)
-                    }
+                    mainService?.let { result.success(it.checkMediaPermission()) }
+                        ?: result.success(false)
                 }
                 "check_service" -> {
                     Companion.flutterMethodChannel?.invokeMethod(
@@ -195,36 +252,23 @@ class MainActivity : FlutterActivity() {
                         "on_state_changed",
                         mapOf("name" to "media", "value" to MainService.isReady.toString())
                     )
-                    result.success(true)
-                }
-                "stop_input" -> {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                        InputService.ctx?.disableSelf()
-                    }
-                    InputService.ctx = null
+                    // Уведомляем flutter о текущем методе захвата
                     Companion.flutterMethodChannel?.invokeMethod(
                         "on_state_changed",
-                        mapOf("name" to "input", "value" to InputService.isOpen.toString())
+                        mapOf("name" to "capture_method", "value" to CaptureController.activeMethod)
                     )
                     result.success(true)
                 }
-                "cancel_notification" -> {
-                    if (call.arguments is Int) {
-                        val id = call.arguments as Int
-                        mainService?.cancelNotification(id)
-                    } else {
-                        result.success(true)
-                    }
+                "check_accessibility" -> {
+                    result.success(isAccessibilityEnabled())
                 }
                 "enable_soft_keyboard" -> {
-                    // https://blog.csdn.net/hanye2020/article/details/105553780
                     if (call.arguments as Boolean) {
                         window.clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
                     } else {
                         window.addFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
                     }
                     result.success(true)
-
                 }
                 "try_sync_clipboard" -> {
                     rdClipboardManager?.syncClipboard(true)
@@ -236,46 +280,28 @@ class MainActivity : FlutterActivity() {
                 }
                 SET_START_ON_BOOT_OPT -> {
                     if (call.arguments is Boolean) {
-                        val prefs = getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
-                        val edit = prefs.edit()
-                        edit.putBoolean(KEY_START_ON_BOOT_OPT, call.arguments as Boolean)
-                        edit.apply()
+                        getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE).edit()
+                            .putBoolean(KEY_START_ON_BOOT_OPT, call.arguments as Boolean).apply()
                         result.success(true)
-                    } else {
-                        result.success(false)
-                    }
+                    } else result.success(false)
                 }
                 SYNC_APP_DIR_CONFIG_PATH -> {
                     if (call.arguments is String) {
-                        val prefs = getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
-                        val edit = prefs.edit()
-                        edit.putString(KEY_APP_DIR_CONFIG_PATH, call.arguments as String)
-                        edit.apply()
+                        getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE).edit()
+                            .putString(KEY_APP_DIR_CONFIG_PATH, call.arguments as String).apply()
                         result.success(true)
-                    } else {
-                        result.success(false)
-                    }
+                    } else result.success(false)
                 }
                 GET_VALUE -> {
                     if (call.arguments is String) {
                         if (call.arguments == KEY_IS_SUPPORT_VOICE_CALL) {
                             result.success(isSupportVoiceCall())
-                        } else {
-                            result.error("-1", "No such key", null)
-                        }
-                    } else {
-                        result.success(null)
-                    }
+                        } else result.error("-1", "No such key", null)
+                    } else result.success(null)
                 }
-                "on_voice_call_started" -> {
-                    onVoiceCallStarted()
-                }
-                "on_voice_call_closed" -> {
-                    onVoiceCallClosed()
-                }
-                else -> {
-                    result.error("-1", "No such method", null)
-                }
+                "on_voice_call_started" -> onVoiceCallStarted()
+                "on_voice_call_closed" -> onVoiceCallClosed()
+                else -> result.error("-1", "No such method", null)
             }
         }
     }
@@ -287,8 +313,7 @@ class MainActivity : FlutterActivity() {
 
         val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val wh = getScreenSize(windowManager)
-        var w = wh.first
-        var h = wh.second
+        var w = wh.first; var h = wh.second
         val align = 64
         w = (w + align - 1) / align * align
         h = (h + align - 1) / align * align
@@ -296,113 +321,78 @@ class MainActivity : FlutterActivity() {
             val codecObject = JSONObject()
             codecObject.put("name", codec.name)
             codecObject.put("is_encoder", codec.isEncoder)
-            var hw: Boolean? = null;
+            var hw: Boolean? = null
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 hw = codec.isHardwareAccelerated
             } else {
-                // https://chromium.googlesource.com/external/webrtc/+/HEAD/sdk/android/src/java/org/webrtc/MediaCodecUtils.java#29
-                // https://chromium.googlesource.com/external/webrtc/+/master/sdk/android/api/org/webrtc/HardwareVideoEncoderFactory.java#229
-                if (listOf("OMX.google.", "OMX.SEC.", "c2.android").any { codec.name.startsWith(it, true) }) {
-                    hw = false
-                } else if (listOf("c2.qti", "OMX.qcom.video", "OMX.Exynos", "OMX.hisi", "OMX.MTK", "OMX.Intel", "OMX.Nvidia").any { codec.name.startsWith(it, true) }) {
-                    hw = true
-                }
+                if (listOf("OMX.google.", "OMX.SEC.", "c2.android").any { codec.name.startsWith(it, true) }) hw = false
+                else if (listOf("c2.qti", "OMX.qcom.video", "OMX.Exynos", "OMX.hisi", "OMX.MTK", "OMX.Intel", "OMX.Nvidia").any { codec.name.startsWith(it, true) }) hw = true
             }
-            if (hw != true) {
-                return@forEach
-            }
+            if (hw != true) return@forEach
             codecObject.put("hw", hw)
             var mime_type = ""
             codec.supportedTypes.forEach { type ->
-                if (listOf("video/avc", "video/hevc").contains(type)) { // "video/x-vnd.on2.vp8", "video/x-vnd.on2.vp9", "video/av01"
-                    mime_type = type;
-                }
+                if (listOf("video/avc", "video/hevc").contains(type)) mime_type = type
             }
             if (mime_type.isNotEmpty()) {
                 codecObject.put("mime_type", mime_type)
                 val caps = codec.getCapabilitiesForType(mime_type)
-                if (codec.isEncoder) {
-                    // Encoder's max_height and max_width are interchangeable
-                    if (!caps.videoCapabilities.isSizeSupported(w,h) && !caps.videoCapabilities.isSizeSupported(h,w)) {
-                        return@forEach
-                    }
-                }
+                if (codec.isEncoder && !caps.videoCapabilities.isSizeSupported(w, h) && !caps.videoCapabilities.isSizeSupported(h, w)) return@forEach
                 codecObject.put("min_width", caps.videoCapabilities.supportedWidths.lower)
                 codecObject.put("max_width", caps.videoCapabilities.supportedWidths.upper)
                 codecObject.put("min_height", caps.videoCapabilities.supportedHeights.lower)
                 codecObject.put("max_height", caps.videoCapabilities.supportedHeights.upper)
-                val surface = caps.colorFormats.contains(COLOR_FormatSurface);
+                val surface = caps.colorFormats.contains(COLOR_FormatSurface)
                 codecObject.put("surface", surface)
                 val nv12 = caps.colorFormats.contains(COLOR_FormatYUV420SemiPlanar)
                 codecObject.put("nv12", nv12)
-                if (!(nv12 || surface)) {
-                    return@forEach
-                }
+                if (!(nv12 || surface)) return@forEach
                 codecObject.put("min_bitrate", caps.videoCapabilities.bitrateRange.lower / 1000)
                 codecObject.put("max_bitrate", caps.videoCapabilities.bitrateRange.upper / 1000)
                 if (!codec.isEncoder) {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                         codecObject.put("low_latency", caps.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency))
                     }
-                }
-                if (!codec.isEncoder) {
                     return@forEach
                 }
                 codecArray.put(codecObject)
             }
         }
-        val result = JSONObject()
-        result.put("version", Build.VERSION.SDK_INT)
-        result.put("w", w)
-        result.put("h", h)
-        result.put("codecs", codecArray)
-        FFI.setCodecInfo(result.toString())
+        FFI.setCodecInfo(JSONObject().apply {
+            put("version", Build.VERSION.SDK_INT)
+            put("w", w); put("h", h); put("codecs", codecArray)
+        }.toString())
     }
 
     private fun onVoiceCallStarted() {
         var ok = false
-        mainService?.let {
-            ok = it.onVoiceCallStarted()
-        } ?: let {
+        mainService?.let { ok = it.onVoiceCallStarted() } ?: let {
             isAudioStart = true
             ok = audioRecordHandle.onVoiceCallStarted(null)
         }
         if (!ok) {
-            // Rarely happens, So we just add log and msgbox here.
-            Log.e(logTag, "onVoiceCallStarted fail")
             flutterMethodChannel?.invokeMethod("msgbox", mapOf(
                 "type" to "custom-nook-nocancel-hasclose-error",
-                "title" to "Voice call",
-                "text" to "Failed to start voice call."))
-        } else {
-            Log.d(logTag, "onVoiceCallStarted success")
+                "title" to "Voice call", "text" to "Failed to start voice call."))
         }
     }
 
     private fun onVoiceCallClosed() {
         var ok = false
-        mainService?.let {
-            ok = it.onVoiceCallClosed()
-        } ?: let {
+        mainService?.let { ok = it.onVoiceCallClosed() } ?: let {
             isAudioStart = false
             ok = audioRecordHandle.onVoiceCallClosed(null)
         }
         if (!ok) {
-            // Rarely happens, So we just add log and msgbox here.
-            Log.e(logTag, "onVoiceCallClosed fail")
             flutterMethodChannel?.invokeMethod("msgbox", mapOf(
                 "type" to "custom-nook-nocancel-hasclose-error",
-                "title" to "Voice call",
-                "text" to "Failed to stop voice call."))
-        } else {
-            Log.d(logTag, "onVoiceCallClosed success")
+                "title" to "Voice call", "text" to "Failed to stop voice call."))
         }
     }
 
     override fun onStop() {
         super.onStop()
-        val disableFloatingWindow = FFI.getLocalOption("disable-floating-window") == "Y"
-        if (!disableFloatingWindow && MainService.isReady) {
+        if (FFI.getLocalOption("disable-floating-window") != "Y" && MainService.isReady) {
             startService(Intent(this, FloatingWindowService::class.java))
         }
     }
