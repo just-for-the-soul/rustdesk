@@ -3,7 +3,7 @@ name: Build Android APK (Universal)
 on:
   workflow_dispatch:
   push:
-    branches: [ master ]
+    branches: [ master new_main ]
 
 env:
   RUST_VERSION: "1.75"
