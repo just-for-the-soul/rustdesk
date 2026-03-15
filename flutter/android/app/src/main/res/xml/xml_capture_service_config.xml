@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Конфигурация MainAccessibilityService (XML Capture).
+    Размещение: flutter/android/app/src/main/res/xml/xml_capture_service_config.xml
+
+    Отличия от accessibility_service_config.xml (InputService):
+    - canRetrieveWindowContent="true"  — нужно для обхода дерева окон в XmlCapture
+    - flagRetrieveInteractiveWindows   — доступ ко всем окнам (включая системные)
+    - flagIncludeNotImportantViews     — видим все узлы дерева, даже скрытые
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
+    android:canRetrieveWindowContent="true"
+    android:canRequestFilterKeyEvents="false"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="100"
+    android:settingsActivity="com.carriez.flutter_hbb.MainActivity" />

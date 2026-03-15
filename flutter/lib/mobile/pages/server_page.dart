@@ -380,6 +380,47 @@ class PermissionChecker extends StatefulWidget {
 }
 
 class _PermissionCheckerState extends State<PermissionChecker> {
+  // -------------------------------------------------------
+  // Capture method selection
+  // -------------------------------------------------------
+  static const _captureChannel =
+      MethodChannel('com.carriez.flutter_hbb/capture');
+
+  /// 'mp' = MediaProjection  |  'xml' = XML/Accessibility capture
+  String _captureMethod = 'mp';
+  bool _captureMethodLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCaptureMethod();
+  }
+
+  Future<void> _loadCaptureMethod() async {
+    try {
+      final method =
+          await _captureChannel.invokeMethod<String>('getCaptureMethod');
+      if (mounted) setState(() => _captureMethod = method ?? 'mp');
+    } catch (_) {}
+  }
+
+  Future<void> _setCaptureMethod(String method) async {
+    if (_captureMethodLoading || _captureMethod == method) return;
+    setState(() => _captureMethodLoading = true);
+    try {
+      await _captureChannel.invokeMethod(
+          method == 'xml' ? 'setXmlCapture' : 'setMediaProjection');
+      if (mounted) setState(() => _captureMethod = method);
+    } catch (e) {
+      debugPrint('setCaptureMethod error: $e');
+    } finally {
+      if (mounted) setState(() => _captureMethodLoading = false);
+    }
+  }
+
+  // -------------------------------------------------------
+  // Build
+  // -------------------------------------------------------
   @override
   Widget build(BuildContext context) {
     final serverModel = Provider.of<ServerModel>(context);
@@ -401,6 +442,8 @@ class _PermissionCheckerState extends State<PermissionChecker> {
               translate("Screen Capture"),
               serverModel.mediaOk,
               serverModel.toggleService),
+          // ── Capture method selector (показывается только если capture активен) ──
+          if (serverModel.mediaOk) _buildCaptureMethodSelector(context),
           PermissionRow(translate("Input Control"), serverModel.inputOk,
               serverModel.toggleInput),
           PermissionRow(translate("Transfer file"), serverModel.fileOk,
@@ -420,7 +463,131 @@ class _PermissionCheckerState extends State<PermissionChecker> {
               serverModel.toggleClipboard),
         ]));
   }
+
+  Widget _buildCaptureMethodSelector(BuildContext context) {
+    final theme = Theme.of(context);
+    final isXml = _captureMethod == 'xml';
+
+    return Padding(
+      padding: const EdgeInsets.only(left: 4, bottom: 6, top: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            translate("Capture method"),
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: MyTheme.darkGray, fontWeight: FontWeight.w600),
+          ).marginOnly(bottom: 6),
+          Row(
+            children: [
+              _CaptureChip(
+                label: 'MediaProjection',
+                icon: Icons.cast_connected,
+                selected: !isXml,
+                loading: _captureMethodLoading && isXml,
+                onTap: () => _setCaptureMethod('mp'),
+              ),
+              const SizedBox(width: 8),
+              _CaptureChip(
+                label: 'XML Capture',
+                icon: Icons.account_tree_outlined,
+                selected: isXml,
+                loading: _captureMethodLoading && !isXml,
+                onTap: () => _setCaptureMethod('xml'),
+              ),
+            ],
+          ),
+          if (isXml)
+            Row(children: [
+              const Icon(Icons.info_outline, size: 13, color: MyTheme.darkGray)
+                  .marginOnly(right: 4),
+              Expanded(
+                child: Text(
+                  translate("Requires Accessibility Service"),
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: MyTheme.darkGray),
+                ),
+              )
+            ]).marginOnly(top: 5),
+        ],
+      ),
+    );
+  }
 }
+
+// ---------------------------------------------------------------------------
+// Chip-кнопка выбора метода захвата
+// ---------------------------------------------------------------------------
+class _CaptureChip extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final bool loading;
+  final VoidCallback onTap;
+
+  const _CaptureChip({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+    this.loading = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final bgColor = selected ? colorScheme.primary : colorScheme.surface;
+    final fgColor = selected ? colorScheme.onPrimary : colorScheme.onSurface;
+    final borderColor =
+        selected ? colorScheme.primary : colorScheme.outlineVariant;
+
+    return GestureDetector(
+      onTap: loading ? null : onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeInOut,
+        padding:
+            const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        decoration: BoxDecoration(
+          color: bgColor,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: borderColor, width: selected ? 2 : 1),
+          boxShadow: selected
+              ? [
+                  BoxShadow(
+                      color: colorScheme.primary.withOpacity(0.25),
+                      blurRadius: 6,
+                      offset: const Offset(0, 2))
+                ]
+              : [],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            loading
+                ? SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: fgColor))
+                : Icon(icon, size: 15, color: fgColor),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: fgColor),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 
 class PermissionRow extends StatelessWidget {
   const PermissionRow(this.name, this.isOk, this.onPressed, {Key? key})
