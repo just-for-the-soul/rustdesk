@@ -155,43 +155,22 @@ class InputService : AccessibilityService() {
     override fun onInterrupt() {}
 
     // -----------------------------------------------------------------------
-    // AccessibilityEvent: авто-принятие диалога MediaProjection
+    // AccessibilityEvent — делегируем в AutoClick
     // -----------------------------------------------------------------------
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         // Обрабатываем в отдельном потоке чтобы не блокировать main thread.
         // Блокировка main thread на >5с → Android помечает сервис "malfunctioning".
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            // sendToTarget() копирует event до передачи в другой поток
             val pkg = event.packageName?.toString() ?: return
             val source = event.source
             eventHandler.post {
                 try {
-                    tryAcceptMediaProjectionDialog(pkg, source)
+                    AutoClick.handleEvent(pkg, source)
                 } catch (_: Exception) {
                 } finally {
                     source?.recycle()
                 }
             }
-        }
-    }
-
-    private fun tryAcceptMediaProjectionDialog(
-        pkg: String, source: AccessibilityNodeInfo?
-    ) {
-        source ?: return
-        val candidates = listOf("Start now", "Начать", "Allow", "Разрешить")
-        for (label in candidates) {
-            try {
-                val results = source.findAccessibilityNodeInfosByText(label)
-                results?.forEach { n ->
-                    if (n.isClickable) {
-                        n.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                        n.recycle()
-                        return
-                    }
-                    n.recycle()
-                }
-            } catch (_: Exception) {}
         }
     }
 
