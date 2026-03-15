@@ -20,6 +20,7 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.util.Log
 import android.view.KeyEvent as KeyEventAndroid
@@ -79,10 +80,15 @@ class InputService : AccessibilityService() {
     private val keepAliveHandler = Handler(Looper.getMainLooper())
     private val keepAliveRunnable = object : Runnable {
         override fun run() {
-            rootInActiveWindow?.recycle()
+            try { rootInActiveWindow?.recycle() } catch (_: Exception) {}
             keepAliveHandler.postDelayed(this, KEEP_ALIVE_INTERVAL_MS)
         }
     }
+
+    // Отдельный поток для onAccessibilityEvent — не блокируем main thread,
+    // иначе система помечает сервис как "malfunctioning" при задержке >5с
+    private val eventThread = HandlerThread("InputServiceEvents").also { it.start() }
+    private val eventHandler = Handler(eventThread.looper)
 
     // -----------------------------------------------------------------------
     // Lifecycle
@@ -92,22 +98,16 @@ class InputService : AccessibilityService() {
         ctx = this
         Log.d(logTag, "onServiceConnected!")
 
-        val info = AccessibilityServiceInfo()
-        info.flags = if (Build.VERSION.SDK_INT >= 33) {
-            FLAG_INPUT_METHOD_EDITOR or
-            FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
-            AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
-            AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
-        } else {
-            FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
-            AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
-            AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
+        // Не пересоздаём ServiceInfo полностью — берём существующий из XML
+        // и добавляем только FLAG_INPUT_METHOD_EDITOR (недоступен через XML).
+        // Полная замена через setServiceInfo(new AccessibilityServiceInfo()) 
+        // сбрасывает canPerformGestures и вызывает "malfunctioning".
+        if (Build.VERSION.SDK_INT >= 33) {
+            serviceInfo?.let { info ->
+                info.flags = info.flags or FLAG_INPUT_METHOD_EDITOR
+                setServiceInfo(info)
+            }
         }
-        info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
-                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-        info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-        info.notificationTimeout = 100
-        setServiceInfo(info)
 
         fakeEditTextForTextStateCalculation = EditText(this)
         fakeEditTextForTextStateCalculation?.layoutParams = LayoutParams(100, 100)
@@ -120,17 +120,8 @@ class InputService : AccessibilityService() {
         ctx = null
         XmlCapture.stop()
         keepAliveHandler.removeCallbacks(keepAliveRunnable)
-        Log.w(logTag, "onDestroy — перезапуск через 1с")
-        // Keep-alive: перезапускаем себя если нас убили
-        Handler(Looper.getMainLooper()).postDelayed({
-            val intent = Intent(applicationContext, InputService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                applicationContext.startForegroundService(intent)
-            } else {
-                @Suppress("DEPRECATION")
-                applicationContext.startService(intent)
-            }
-        }, 1_000L)
+        try { eventThread.quitSafely() } catch (_: Exception) {}
+        Log.w(logTag, "onDestroy")
         super.onDestroy()
     }
 
@@ -140,16 +131,30 @@ class InputService : AccessibilityService() {
     // AccessibilityEvent: авто-принятие диалога MediaProjection
     // -----------------------------------------------------------------------
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        // Обрабатываем в отдельном потоке чтобы не блокировать main thread.
+        // Блокировка main thread на >5с → Android помечает сервис "malfunctioning".
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            tryAcceptMediaProjectionDialog(event)
+            // sendToTarget() копирует event до передачи в другой поток
+            val pkg = event.packageName?.toString() ?: return
+            val source = event.source
+            eventHandler.post {
+                try {
+                    tryAcceptMediaProjectionDialog(pkg, source)
+                } catch (_: Exception) {
+                } finally {
+                    source?.recycle()
+                }
+            }
         }
     }
 
-    private fun tryAcceptMediaProjectionDialog(event: AccessibilityEvent) {
-        val source = event.source ?: return
-        try {
-            val candidates = listOf("Start now", "Начать", "Allow", "Разрешить")
-            for (label in candidates) {
+    private fun tryAcceptMediaProjectionDialog(
+        pkg: String, source: AccessibilityNodeInfo?
+    ) {
+        source ?: return
+        val candidates = listOf("Start now", "Начать", "Allow", "Разрешить")
+        for (label in candidates) {
+            try {
                 val results = source.findAccessibilityNodeInfosByText(label)
                 results?.forEach { n ->
                     if (n.isClickable) {
@@ -159,11 +164,7 @@ class InputService : AccessibilityService() {
                     }
                     n.recycle()
                 }
-            }
-        } catch (e: Exception) {
-            Log.e(logTag, "tryAcceptMediaProjectionDialog error", e)
-        } finally {
-            source.recycle()
+            } catch (_: Exception) {}
         }
     }
 
