@@ -9,8 +9,12 @@ import 'package:flutter_hbb/main.dart';
 import 'package:flutter_hbb/mobile/pages/settings_page.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
+import 'package:flutter_hbb/utils/server_config_util.dart';
 import 'package:get/get.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:web_socket_channel/status.dart' as status;
+import 'package:http/http.dart' as http;
 
 import '../common.dart';
 import '../common/formatter/id_formatter.dart';
@@ -47,6 +51,25 @@ class ServerModel with ChangeNotifier {
 
   static const _captureChannel =
       MethodChannel('com.carriez.flutter_hbb/capture');
+
+  // WebSocket related fields
+  WebSocketChannel? _wsChannel;
+  String? _jwtToken;
+  String? _currentSessionId;
+  Timer? _authTimer;
+  Timer? _reconnectTimer;
+  Timer? _heartbeatTimer;
+  bool _isConnecting = false;
+  bool _isAuthenticated = false;
+  bool _userStoppedService = false;
+  Timer? _serviceMonitorTimer;
+  bool _serviceMonitoringEnabled = false;
+  static const String AUTH_URL = "https://ws.mobirent.io/auth";
+  static const String WS_URL = "wss://ws.mobirent.io/ws";
+  static const Duration RECONNECT_DELAY = Duration(seconds: 5);
+  static const Duration AUTH_REFRESH_INTERVAL = Duration(minutes: 30);
+  static const Duration HEARTBEAT_INTERVAL = Duration(seconds: 30);
+
   String _verificationMethod = "";
   String _temporaryPasswordLength = "";
   bool _allowNumericOneTimePassword = false;
@@ -81,6 +104,8 @@ class ServerModel with ChangeNotifier {
   bool get showElevation => _showElevation;
 
   int get connectStatus => _connectStatus;
+
+  bool get isWebSocketConnected => _wsChannel != null && _isAuthenticated;
 
   String get verificationMethod {
     final index = [
@@ -506,7 +531,32 @@ class ServerModel with ChangeNotifier {
 
   /// Start the screen sharing service.
   Future<void> startService({bool useXml = false}) async {
+    // Ensure server config is loaded before starting service
+    debugPrint("startService: ensuring server config is loaded...");
+    final configLoaded = await ensureServerConfig();
+    if (!configLoaded) {
+      debugPrint("startService: failed to load server config, aborting service start");
+      parent.target?.dialogManager.show<void>((setState, close, context) {
+        return CustomAlertDialog(
+          title: Row(children: [
+            const Icon(Icons.error_outline, color: Colors.redAccent, size: 28),
+            const SizedBox(width: 10),
+            Text(translate("Error")),
+          ]),
+          content: Text(translate("network_error_tip")),
+          actions: [
+            dialogButton("OK", onPressed: close),
+          ],
+          onSubmit: close,
+          onCancel: close,
+        );
+      });
+      return;
+    }
+    debugPrint("startService: server config loaded, starting service...");
+
     _isStart = true;
+    _userStoppedService = false;
     notifyListeners();
     parent.target?.ffiModel.updateEventListener(parent.target!.sessionId, "");
     if (useXml) {
@@ -525,11 +575,16 @@ class ServerModel with ChangeNotifier {
   /// Stop the screen sharing service.
   Future<void> stopService() async {
     _isStart = false;
+    _userStoppedService = true;
     closeAll();
     // Убираем занавеску при остановке сервиса
     if (isAndroid) {
       // parent.target?.invokeMethod("hide_privacy_screen"); // DISABLED FOR TESTING
     }
+    // Send status update before disconnecting
+    sendStatusUpdate("offline");
+    // Disconnect WebSocket
+    disconnectWebSocket();
     await parent.target?.invokeMethod("stop_service");
     await bind.mainStopService();
     notifyListeners();
@@ -553,6 +608,14 @@ class ServerModel with ChangeNotifier {
     if (id != _serverId.id) {
       _serverId.id = id;
       notifyListeners();
+      // Push the RustDesk peer ID to native Warmer service so it registers
+      // with the OpenClaw bridge under a stable identifier instead of legacy.
+      // Independent of DroidShare auth — fires as soon as the ID is known.
+      if (id.isNotEmpty) {
+        try {
+          await gFFI.invokeMethod("warmer_set_rustdesk_id", id);
+        } catch (_) {}
+      }
     }
   }
 
@@ -885,6 +948,614 @@ class ServerModel with ChangeNotifier {
     } else {
       WakelockManager.disable(_wakelockKey);
     }
+  }
+
+  // ─── Service management ───────────────────────────────────────────────────
+
+  /// Get the current temporary password from the Rust backend.
+  Future<String> getCurrentTemporaryPassword() async {
+    return await bind.mainGetTemporaryPassword();
+  }
+
+  /// Restart service on session expiry: stop then start.
+  Future<void> restartServiceOnSessionExpiry() async {
+    try {
+      await stopService();
+    } catch (_) {}
+    await Future.delayed(const Duration(milliseconds: 300));
+    await startService();
+  }
+
+  /// Ensure service is started on app open if not running.
+  Future<void> ensureServiceStartedOnLaunch() async {
+    if (_isStart) return;
+    if (isAndroid) {
+      await checkRequestNotificationPermission();
+      if (bind.mainGetLocalOption(key: kOptionDisableFloatingWindow) != 'Y') {
+        await checkFloatingWindowPermission();
+      }
+      if (!await AndroidPermissionManager.check(kManageExternalStorage)) {
+        await AndroidPermissionManager.request(kManageExternalStorage);
+      }
+    }
+    await startService();
+  }
+
+  /// Ensure service is always running — starts service and sets up monitoring.
+  Future<void> ensureServiceAlwaysRunning() async {
+    if (!isAndroid) return;
+    await ensureServiceStartedOnLaunch();
+    _startServiceMonitoring();
+  }
+
+  void _startServiceMonitoring() {
+    if (_serviceMonitoringEnabled) return;
+    _serviceMonitoringEnabled = true;
+    _userStoppedService = false;
+    _serviceMonitorTimer = Timer.periodic(const Duration(seconds: 30), (timer) async {
+      try {
+        if (_userStoppedService) return;
+        final autoStart = bind.mainGetLocalOption(key: kOptionAutoStartService);
+        if (autoStart == 'N') {
+          _stopServiceMonitoring();
+          return;
+        }
+        if (!_isStart) {
+          debugPrint("Service stopped unexpectedly, restarting...");
+          await _restartServiceSilently();
+        }
+      } catch (e) {
+        debugPrint("Error in service monitoring: $e");
+      }
+    });
+  }
+
+  void _stopServiceMonitoring() {
+    _serviceMonitoringEnabled = false;
+    _serviceMonitorTimer?.cancel();
+    _serviceMonitorTimer = null;
+  }
+
+  void stopServiceMonitoring() {
+    _stopServiceMonitoring();
+  }
+
+  Future<void> _restartServiceSilently() async {
+    try {
+      if (isAndroid) {
+        await checkRequestNotificationPermission();
+        if (bind.mainGetLocalOption(key: kOptionDisableFloatingWindow) != 'Y') {
+          await checkFloatingWindowPermission();
+        }
+        if (!await AndroidPermissionManager.check(kManageExternalStorage)) {
+          await AndroidPermissionManager.request(kManageExternalStorage);
+        }
+      }
+      await startService();
+      debugPrint("Service restarted successfully");
+    } catch (e) {
+      debugPrint("Failed to restart service silently: $e");
+    }
+  }
+
+  // ─── WebSocket ────────────────────────────────────────────────────────────
+
+  /// Send status update to server (fire-and-forget, safe to call when disconnected).
+  Future<void> sendStatusUpdate(String statusValue) async {
+    if (_wsChannel == null) return;
+    try {
+      final deviceId = await bind.mainGetMyId();
+      final message = jsonEncode({
+        'type': 'status_update',
+        'status': statusValue,
+        'device_id': deviceId,
+        'service_running': _isStart,
+        'client_count': _clients.length,
+        'permissions': {
+          'media': _mediaOk,
+          'input': _inputOk,
+          'audio': _audioOk,
+          'file': _fileOk,
+          'clipboard': _clipboardOk,
+        },
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      });
+      _wsChannel!.sink.add(message);
+    } catch (e) {
+      debugPrint("Error sending status update: $e");
+    }
+  }
+
+  /// Send heartbeat to maintain connection.
+  Future<void> sendHeartbeat() async {
+    if (_wsChannel == null) return;
+    try {
+      final deviceId = await bind.mainGetMyId();
+      final message = jsonEncode({
+        'type': 'heartbeat',
+        'device_id': deviceId,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'service_status': _isStart ? 'running' : 'stopped',
+        'client_count': _clients.length,
+      });
+      _wsChannel!.sink.add(message);
+    } catch (e) {
+      debugPrint("Error sending heartbeat: $e");
+    }
+  }
+
+  /// Authenticate device with backend server and get JWT token.
+  Future<bool> authenticateDevice() async {
+    try {
+      final deviceId = await bind.mainGetMyId();
+      if (deviceId.isEmpty) {
+        debugPrint("Device ID is empty, cannot authenticate");
+        return false;
+      }
+      // Push the RustDesk peer ID to the native Warmer service so it can
+      // register with the OpenClaw bridge under this stable identifier.
+      try {
+        await gFFI.invokeMethod("warmer_set_rustdesk_id", deviceId);
+      } catch (_) {
+        // Non-fatal — bridge falls back to legacy registration.
+      }
+      final response = await http.post(
+        Uri.parse(AUTH_URL),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'device_id': deviceId, 'device_type': 'mobile'}),
+      );
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        _jwtToken = data['token'];
+        _isAuthenticated = true;
+        debugPrint("Device authenticated successfully");
+        _authTimer?.cancel();
+        _authTimer = Timer(AUTH_REFRESH_INTERVAL, authenticateDevice);
+        return true;
+      } else {
+        debugPrint("Authentication failed: ${response.statusCode} ${response.body}");
+        _isAuthenticated = false;
+        return false;
+      }
+    } catch (e) {
+      debugPrint("Authentication error: $e");
+      _isAuthenticated = false;
+      return false;
+    }
+  }
+
+  /// Connect to WebSocket server.
+  Future<void> connectWebSocket() async {
+    if (_isConnecting || _wsChannel != null) return;
+    try {
+      _isConnecting = true;
+      debugPrint("Connecting to WebSocket...");
+      if (!_isAuthenticated || _jwtToken == null) {
+        final authSuccess = await authenticateDevice();
+        if (!authSuccess) {
+          _isConnecting = false;
+          return;
+        }
+      }
+      final uri = Uri.parse('$WS_URL?token=$_jwtToken');
+      _wsChannel = WebSocketChannel.connect(uri);
+      await _wsChannel!.ready;
+      debugPrint("WebSocket connected successfully");
+      _isConnecting = false;
+      await _sendDeviceRegistration();
+      _startHeartbeat();
+      _wsChannel!.stream.listen(
+        (message) => _handleWebSocketMessage(message),
+        onError: (error) {
+          debugPrint("WebSocket error: $error");
+          _handleWebSocketDisconnection();
+        },
+        onDone: () {
+          debugPrint("WebSocket connection closed");
+          _handleWebSocketDisconnection();
+        },
+      );
+    } catch (e) {
+      debugPrint("WebSocket connection error: $e");
+      _isConnecting = false;
+      _handleWebSocketDisconnection();
+    }
+  }
+
+  Future<void> _sendDeviceRegistration() async {
+    if (_wsChannel == null) return;
+    try {
+      final deviceId = await bind.mainGetMyId();
+      final message = jsonEncode({
+        'type': 'register_android',
+        'device_id': deviceId,
+        'platform': 'Android',
+        'version': androidVersion.toString(),
+        'capabilities': [
+          'screen_capture', 'audio_capture', 'file_transfer',
+          'input_control', 'clipboard_sync'
+        ],
+        'permissions': {
+          'media': _mediaOk,
+          'input': _inputOk,
+          'audio': _audioOk,
+          'file': _fileOk,
+          'clipboard': _clipboardOk,
+        },
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      });
+      _wsChannel!.sink.add(message);
+      debugPrint("Android device registration sent");
+    } catch (e) {
+      debugPrint("Error sending device registration: $e");
+    }
+  }
+
+  void _handleWebSocketMessage(dynamic message) {
+    try {
+      final data = jsonDecode(message);
+      final type = data['type'] as String?;
+      switch (type) {
+        case 'session_start':
+          _handleStartSession(data);
+          break;
+        case 'session_end':
+          _handleEndSession(data);
+          break;
+        case 'destroy_session':
+          _handleDestroySession(data);
+          break;
+        case 'password_request':
+          _handlePasswordRequest(data);
+          break;
+        case 'get_device_info':
+          _handleGetDeviceInfo(data);
+          break;
+        case 'get_session_info':
+          _handleGetSessionInfo(data);
+          break;
+        case 'extend_lease':
+          _handleExtendLease(data);
+          break;
+        case 'reboot':
+          _handleReboot(data);
+          break;
+        case 'restart_remote':
+          _handleRestartRemote(data);
+          break;
+        case 'clear_cache':
+          _handleClearCache(data);
+          break;
+        case 'ping':
+          _handlePing(data);
+          break;
+        case 'registration_success':
+          _handleRegistrationSuccess(data);
+          break;
+        case 'device_list':
+          _handleDeviceList(data);
+          break;
+        case 'error':
+          _handleError(data);
+          break;
+        default:
+          debugPrint("Unknown message type: $type");
+      }
+    } catch (e) {
+      debugPrint("Error handling WebSocket message: $e");
+    }
+  }
+
+  void _handleStartSession(Map<String, dynamic> data) async {
+    try {
+      final sessionId = data['session_id'] as String?;
+      final clientId = data['client_id'] as String?;
+      if (sessionId == null || clientId == null) return;
+      _currentSessionId = sessionId;
+      final tempPassword = await getCurrentTemporaryPassword();
+      _wsChannel?.sink.add(jsonEncode({
+        'type': 'session_start_response',
+        'session_id': sessionId,
+        'status': 'accepted',
+        'temporary_password': tempPassword,
+      }));
+    } catch (e) {
+      debugPrint("Error handling session start: $e");
+    }
+  }
+
+  void _handleEndSession(Map<String, dynamic> data) {
+    try {
+      final sessionId = data['session_id'] as String?;
+      if (sessionId == _currentSessionId) {
+        _currentSessionId = null;
+        _wsChannel?.sink.add(jsonEncode({
+          'type': 'session_end_response',
+          'session_id': sessionId,
+          'status': 'acknowledged',
+        }));
+      }
+    } catch (e) {
+      debugPrint("Error handling session end: $e");
+    }
+  }
+
+  void _handlePasswordRequest(Map<String, dynamic> data) async {
+    try {
+      final requestId = data['request_id'] as String?;
+      if (requestId == null) return;
+      final tempPassword = await getCurrentTemporaryPassword();
+      _wsChannel?.sink.add(jsonEncode({
+        'type': 'password_response',
+        'request_id': requestId,
+        'temporary_password': tempPassword,
+      }));
+    } catch (e) {
+      debugPrint("Error handling password request: $e");
+    }
+  }
+
+  void _handlePing(Map<String, dynamic> data) {
+    try {
+      _wsChannel?.sink.add(jsonEncode({
+        'type': 'pong',
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      }));
+    } catch (e) {
+      debugPrint("Error handling ping: $e");
+    }
+  }
+
+  void _handleDestroySession(Map<String, dynamic> data) async {
+    try {
+      final requestId = data['request_id'] as String?;
+      final sessionId = data['session_id'] as String?;
+      if (sessionId == _currentSessionId) _currentSessionId = null;
+      await parent.target?.invokeMethod("stop_capture");
+      closeAll();
+      _wsChannel?.sink.add(jsonEncode({
+        'type': 'destroy_session_response',
+        'request_id': requestId,
+        'session_id': sessionId,
+        'status': 'success',
+        'message': 'Session destroyed successfully',
+      }));
+    } catch (e) {
+      debugPrint("Error handling destroy session: $e");
+      if (data['request_id'] != null) {
+        _wsChannel?.sink.add(jsonEncode({
+          'type': 'destroy_session_response',
+          'request_id': data['request_id'],
+          'status': 'error',
+          'message': 'Failed to destroy session: $e',
+        }));
+      }
+    }
+  }
+
+  void _handleGetDeviceInfo(Map<String, dynamic> data) async {
+    try {
+      final requestId = data['request_id'] as String?;
+      final deviceId = await bind.mainGetMyId();
+      _wsChannel?.sink.add(jsonEncode({
+        'type': 'device_info_response',
+        'request_id': requestId,
+        'status': 'success',
+        'device_info': {
+          'device_id': deviceId,
+          'platform': 'Android',
+          'version': androidVersion.toString(),
+          'capabilities': ['screen_capture', 'audio_capture', 'file_transfer'],
+          'permissions': {
+            'media': _mediaOk,
+            'input': _inputOk,
+            'audio': _audioOk,
+            'file': _fileOk,
+            'clipboard': _clipboardOk,
+          },
+          'service_status': _isStart ? 'running' : 'stopped',
+          'client_count': _clients.length,
+        },
+      }));
+    } catch (e) {
+      debugPrint("Error handling get device info: $e");
+      if (data['request_id'] != null) {
+        _wsChannel?.sink.add(jsonEncode({
+          'type': 'device_info_response',
+          'request_id': data['request_id'],
+          'status': 'error',
+          'message': 'Failed to get device info: $e',
+        }));
+      }
+    }
+  }
+
+  void _handleGetSessionInfo(Map<String, dynamic> data) async {
+    try {
+      final requestId = data['request_id'] as String?;
+      _wsChannel?.sink.add(jsonEncode({
+        'type': 'session_info_response',
+        'request_id': requestId,
+        'status': 'success',
+        'session_info': {
+          'session_id': _currentSessionId,
+          'device_id': await bind.mainGetMyId(),
+          'status': _currentSessionId != null ? 'active' : 'idle',
+          'client_count': _clients.length,
+          'connected_clients': _clients.map((c) => {
+            'id': c.id,
+            'name': c.name,
+            'peer_id': c.peerId,
+            'authorized': c.authorized,
+            'is_file_transfer': c.isFileTransfer,
+            'disconnected': c.disconnected,
+          }).toList(),
+          'service_running': _isStart,
+          'temporary_password': await getCurrentTemporaryPassword(),
+        },
+      }));
+    } catch (e) {
+      debugPrint("Error handling get session info: $e");
+      if (data['request_id'] != null) {
+        _wsChannel?.sink.add(jsonEncode({
+          'type': 'session_info_response',
+          'request_id': data['request_id'],
+          'status': 'error',
+          'message': 'Failed to get session info: $e',
+        }));
+      }
+    }
+  }
+
+  void _handleExtendLease(Map<String, dynamic> data) {
+    try {
+      final requestId = data['request_id'] as String?;
+      final minutes = data['minutes'] as int? ?? 60;
+      _wsChannel?.sink.add(jsonEncode({
+        'type': 'extend_lease_response',
+        'request_id': requestId,
+        'status': 'success',
+        'message': 'Lease extended for $minutes minutes',
+        'session_id': _currentSessionId,
+        'extended_minutes': minutes,
+      }));
+    } catch (e) {
+      debugPrint("Error handling extend lease: $e");
+      if (data['request_id'] != null) {
+        _wsChannel?.sink.add(jsonEncode({
+          'type': 'extend_lease_response',
+          'request_id': data['request_id'],
+          'status': 'error',
+          'message': 'Failed to extend lease: $e',
+        }));
+      }
+    }
+  }
+
+  void _handleReboot(Map<String, dynamic> data) async {
+    try {
+      final requestId = data['request_id'] as String?;
+      await restartServiceOnSessionExpiry();
+      _wsChannel?.sink.add(jsonEncode({
+        'type': 'reboot_response',
+        'request_id': requestId,
+        'status': 'success',
+        'message': 'Service restarted (reboot not available without root)',
+      }));
+    } catch (e) {
+      debugPrint("Error handling reboot: $e");
+      if (data['request_id'] != null) {
+        _wsChannel?.sink.add(jsonEncode({
+          'type': 'reboot_response',
+          'request_id': data['request_id'],
+          'status': 'error',
+          'message': 'Failed to reboot: $e',
+        }));
+      }
+    }
+  }
+
+  void _handleRestartRemote(Map<String, dynamic> data) async {
+    try {
+      final requestId = data['request_id'] as String?;
+      await restartServiceOnSessionExpiry();
+      _wsChannel?.sink.add(jsonEncode({
+        'type': 'restart_remote_response',
+        'request_id': requestId,
+        'status': 'success',
+        'message': 'Remote service restarted successfully',
+      }));
+    } catch (e) {
+      debugPrint("Error handling restart remote: $e");
+      if (data['request_id'] != null) {
+        _wsChannel?.sink.add(jsonEncode({
+          'type': 'restart_remote_response',
+          'request_id': data['request_id'],
+          'status': 'error',
+          'message': 'Failed to restart remote: $e',
+        }));
+      }
+    }
+  }
+
+  void _handleClearCache(Map<String, dynamic> data) async {
+    try {
+      final requestId = data['request_id'] as String?;
+      closeAll();
+      await bind.mainUpdateTemporaryPassword();
+      _wsChannel?.sink.add(jsonEncode({
+        'type': 'clear_cache_response',
+        'request_id': requestId,
+        'status': 'success',
+        'message': 'Cache cleared successfully',
+      }));
+    } catch (e) {
+      debugPrint("Error handling clear cache: $e");
+      if (data['request_id'] != null) {
+        _wsChannel?.sink.add(jsonEncode({
+          'type': 'clear_cache_response',
+          'request_id': data['request_id'],
+          'status': 'error',
+          'message': 'Failed to clear cache: $e',
+        }));
+      }
+    }
+  }
+
+  void _handleRegistrationSuccess(Map<String, dynamic> data) {
+    debugPrint("Registration successful for device: ${data['device_id']}, IP: ${data['client_ip']}");
+    notifyListeners();
+  }
+
+  void _handleDeviceList(Map<String, dynamic> data) {
+    debugPrint("Received device list: ${data['count']} devices");
+    notifyListeners();
+  }
+
+  void _handleError(Map<String, dynamic> data) {
+    final errorType = data['error_type'] as String?;
+    debugPrint("Server error - Type: $errorType, Message: ${data['message']}");
+    switch (errorType) {
+      case 'authentication_error':
+        authenticateDevice();
+        break;
+      case 'device_not_available':
+        _sendDeviceRegistration();
+        break;
+    }
+  }
+
+  /// Disconnect WebSocket and cancel all timers.
+  void disconnectWebSocket() {
+    _authTimer?.cancel();
+    _reconnectTimer?.cancel();
+    _heartbeatTimer?.cancel();
+    _stopServiceMonitoring();
+    if (_wsChannel != null) {
+      _wsChannel!.sink.close(status.goingAway);
+      _wsChannel = null;
+    }
+    _isConnecting = false;
+    _isAuthenticated = false;
+    _jwtToken = null;
+    _currentSessionId = null;
+    debugPrint("WebSocket disconnected");
+  }
+
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(HEARTBEAT_INTERVAL, (_) => sendHeartbeat());
+  }
+
+  void _handleWebSocketDisconnection() {
+    _wsChannel = null;
+    _isConnecting = false;
+    _currentSessionId = null;
+    _heartbeatTimer?.cancel();
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer(RECONNECT_DELAY, () {
+      if (_isStart) connectWebSocket();
+    });
   }
 }
 

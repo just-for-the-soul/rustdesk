@@ -110,6 +110,8 @@ class MainActivity : FlutterActivity() {
         requestAccessibilityIfNeeded()
         // Запрашиваем исключение из battery optimization
         requestBatteryOptimizationExemption()
+        // Start MainService early so WebSocket authentication begins before screen sharing
+        startService(Intent(this, MainService::class.java))
     }
 
     /**
@@ -347,6 +349,17 @@ class MainActivity : FlutterActivity() {
                     )
                     result.success(true)
                 }
+                "warmer_set_rustdesk_id" -> {
+                    // Persist the RustDesk peer ID for WarmerService to register with
+                    // the OpenClaw bridge as a uniquely-addressable device.
+                    val id = call.arguments as? String
+                    if (!id.isNullOrEmpty()) {
+                        context.getSharedPreferences(WarmerService.PREFS_NAME, Context.MODE_PRIVATE)
+                            .edit().putString(WarmerService.PREFS_KEY_ID, id).apply()
+                    }
+                    result.success(true)
+                    return@setMethodCallHandler
+                }
                 "check_accessibility" -> {
                     result.success(isAccessibilityEnabled())
                 }
@@ -389,6 +402,12 @@ class MainActivity : FlutterActivity() {
                 }
                 "on_voice_call_started" -> onVoiceCallStarted()
                 "on_voice_call_closed" -> onVoiceCallClosed()
+                "get_device_unique_id" -> {
+                    result.success(MainService.instance?.getDeviceUniqueId() ?: "")
+                }
+                "get_current_otp" -> {
+                    result.success("")
+                }
                 "show_privacy_screen" -> {
                     PrivacyScreenService.show(this)
                     result.success(null)

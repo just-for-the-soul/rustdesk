@@ -12,6 +12,15 @@ import ffi.FFI
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.*
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.telephony.TelephonyManager
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 import android.app.PendingIntent.FLAG_IMMUTABLE
 import android.app.PendingIntent.FLAG_UPDATE_CURRENT
 import android.content.Context
@@ -207,11 +216,29 @@ class MainService : Service() {
             get() = _isAudioStart
         // Ссылка для управления из PrivacyScreenService
         @Volatile var instance: MainService? = null
+        // Track whether a remote session is currently active
+        var isSessionActive: Boolean = false
     }
 
     private val logTag = "LOG_SERVICE"
     private val useVP9 = false
     private val binder = LocalBinder()
+
+    // ── WebSocket / JWT fields ──────────────────────────────────────────────
+    private var wsClient: okhttp3.WebSocket? = null
+    private var wsOkHttpClient: okhttp3.OkHttpClient? = null
+    private val wsUrl = "wss://ws.mobirent.io/ws"
+    private val authUrl = "https://ws.mobirent.io/auth"
+    private var currentOtp: String = ""
+    private var lastTempPasswordSent: String = ""
+    private var jwtToken: String = ""
+    private var isAuthenticating: Boolean = false
+    private var wsReconnectAttempts = 0
+    private var wsShouldReconnect = true
+    private val wsReconnectMaxDelay = 30000L
+    private val wsReconnectBaseDelay = 2000L
+    private val wsHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    // ───────────────────────────────────────────────────────────────────────
 
     private var reuseVirtualDisplay = Build.VERSION.SDK_INT > 33
 
@@ -250,10 +277,16 @@ class MainService : Service() {
         FFI.startServer(configPath, "")
 
         createForegroundNotification()
+
+        // Start WebSocket authentication on service creation
+        wsShouldReconnect = true
+        wsReconnectAttempts = 0
+        authenticateDevice()
     }
 
     override fun onDestroy() {
         checkMediaPermission()
+        disconnectWebSocket()
         stopService(Intent(this, FloatingWindowService::class.java))
         super.onDestroy()
     }
@@ -761,5 +794,545 @@ class MainService : Service() {
             .setContentText(text)
             .build()
         notificationManager.notify(DEFAULT_NOTIFY_ID, notification)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // WebSocket / JWT management
+    // ══════════════════════════════════════════════════════════════════════
+
+    private fun authenticateDevice() {
+        if (isAuthenticating) return
+        isAuthenticating = true
+
+        val deviceId = getDeviceUniqueId()
+        android.util.Log.d("JWT", "Authenticating device: $deviceId")
+
+        val client = okhttp3.OkHttpClient()
+        val mediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
+        val requestBody = org.json.JSONObject().apply {
+            put("device_id", deviceId)
+        }.toString().toRequestBody(mediaType)
+
+        val request = okhttp3.Request.Builder()
+            .url(authUrl)
+            .post(requestBody)
+            .build()
+
+        client.newCall(request).enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
+                android.util.Log.e("JWT", "Authentication failed: ${e.message}")
+                isAuthenticating = false
+                wsHandler.postDelayed({ authenticateDevice() }, 5000L)
+            }
+
+            override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                isAuthenticating = false
+                try {
+                    val responseBody = response.body?.string()
+                    if (response.isSuccessful && responseBody != null) {
+                        val json = org.json.JSONObject(responseBody)
+                        if (json.optBoolean("success", false)) {
+                            jwtToken = json.optString("token", "")
+                            android.util.Log.d("JWT", "Authentication successful, token received")
+                            connectWebSocket()
+                        } else {
+                            android.util.Log.e("JWT", "Authentication failed: ${json.optString("message", "Unknown error")}")
+                            wsHandler.postDelayed({ authenticateDevice() }, 5000L)
+                        }
+                    } else {
+                        android.util.Log.e("JWT", "Authentication failed: HTTP ${response.code}")
+                        wsHandler.postDelayed({ authenticateDevice() }, 5000L)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("JWT", "Failed to parse auth response", e)
+                    wsHandler.postDelayed({ authenticateDevice() }, 5000L)
+                }
+            }
+        })
+    }
+
+    private fun connectWebSocket() {
+        if (jwtToken.isEmpty()) {
+            android.util.Log.d("WebSocket", "No JWT token, authenticating first...")
+            authenticateDevice()
+            return
+        }
+
+        wsOkHttpClient = okhttp3.OkHttpClient()
+        val request = okhttp3.Request.Builder()
+            .url(wsUrl)
+            .addHeader("Authorization", "Bearer $jwtToken")
+            .build()
+
+        wsClient = wsOkHttpClient?.newWebSocket(request, object : okhttp3.WebSocketListener() {
+            override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) {
+                wsReconnectAttempts = 0
+                android.util.Log.d("WebSocket", "Connected to $wsUrl")
+                val deviceId = getDeviceUniqueId()
+                val networkType = getNetworkType()
+                val registerMsg = org.json.JSONObject()
+                registerMsg.put("type", "register_android")
+                registerMsg.put("device_id", deviceId)
+                registerMsg.put("network_type", networkType)
+                webSocket.send(registerMsg.toString())
+                android.util.Log.d("WebSocket", "Registered device: $deviceId, Network: $networkType")
+            }
+
+            override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
+                android.util.Log.d("WebSocket", "Received: $text")
+                try {
+                    val json = org.json.JSONObject(text)
+                    when (json.optString("type")) {
+                        "registration_success" ->
+                            android.util.Log.d("WebSocket", "Registration successful for: ${json.optString("device_id")}")
+                        "start_session"    -> handleStartSession(json, webSocket)
+                        "destroy_session"  -> handleDestroySession(json, webSocket)
+                        "get_session_info" -> handleGetSessionInfo(json, webSocket)
+                        "get_device_info"  -> handleGetDeviceInfo(json, webSocket)
+                        "extend_lease"     -> handleExtendLease(json, webSocket)
+                        "reboot"           -> handleReboot(json, webSocket)
+                        "restart_remote"   -> handleRestartRemote(json, webSocket)
+                        "clear_cache"      -> handleClearCache(json, webSocket)
+                        else -> android.util.Log.w("WebSocket", "Unknown command: ${json.optString("type")}")
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("WebSocket", "Failed to parse message", e)
+                }
+            }
+
+            override fun onClosing(webSocket: okhttp3.WebSocket, code: Int, reason: String) {
+                webSocket.close(1000, null)
+                android.util.Log.d("WebSocket", "Closing: $reason")
+            }
+
+            override fun onClosed(webSocket: okhttp3.WebSocket, code: Int, reason: String) {
+                android.util.Log.d("WebSocket", "Closed: $reason")
+                attemptReconnect()
+            }
+
+            override fun onFailure(webSocket: okhttp3.WebSocket, t: Throwable, response: okhttp3.Response?) {
+                android.util.Log.e("WebSocket", "Error: ${t.message}", t)
+                attemptReconnect()
+            }
+        })
+    }
+
+    private fun attemptReconnect() {
+        if (!wsShouldReconnect) return
+        wsReconnectAttempts++
+        val delay = (wsReconnectBaseDelay * Math.pow(2.0, (wsReconnectAttempts - 1).toDouble()))
+            .toLong().coerceAtMost(wsReconnectMaxDelay)
+        android.util.Log.d("WebSocket", "Reconnecting in ${delay}ms (attempt $wsReconnectAttempts)")
+        jwtToken = ""
+        wsHandler.postDelayed({ authenticateDevice() }, delay)
+    }
+
+    private fun disconnectWebSocket() {
+        wsShouldReconnect = false
+        wsClient?.close(1000, null)
+        wsOkHttpClient?.dispatcher?.executorService?.shutdown()
+        wsClient = null
+        wsOkHttpClient = null
+    }
+
+    // ── WebSocket command handlers ─────────────────────────────────────────
+
+    private fun handleStartSession(json: org.json.JSONObject, ws: okhttp3.WebSocket) {
+        val sessionId = System.currentTimeMillis().toString()
+        val requestId = json.optString("request_id")
+        isSessionActive = true
+
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            try {
+                MainActivity.flutterMethodChannel?.invokeMethod(
+                    "mainUpdateTemporaryPassword", null,
+                    object : io.flutter.plugin.common.MethodChannel.Result {
+                        override fun success(result: Any?) {
+                            getServerPasswordWithRetry(previous = lastTempPasswordSent) { finalPassword ->
+                                getRustdeskIdWithRetry { rustId ->
+                                    val safePassword = finalPassword.trim()
+                                    val resp = org.json.JSONObject()
+                                    resp.put("type", "session_started")
+                                    resp.put("session_id", sessionId)
+                                    resp.put("temporary_password", safePassword)
+                                    resp.put("rustdesk_id", rustId)
+                                    if (requestId.isNotEmpty()) resp.put("request_id", requestId)
+                                    resp.put("is_session_active", true)
+                                    ws.send(resp.toString())
+                                    lastTempPasswordSent = safePassword
+                                    android.util.Log.d("WebSocket", "Session started: $sessionId pw=$safePassword id=$rustId")
+                                }
+                            }
+                        }
+                        override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
+                            sendFallbackResponse(ws, sessionId, "", requestId)
+                        }
+                        override fun notImplemented() {
+                            sendFallbackResponse(ws, sessionId, "", requestId)
+                        }
+                    })
+            } catch (e: Exception) {
+                android.util.Log.e("WebSocket", "Exception in handleStartSession", e)
+                sendFallbackResponse(ws, sessionId, "", requestId)
+            }
+        }
+    }
+
+    private fun handleDestroySession(json: org.json.JSONObject, ws: okhttp3.WebSocket) {
+        val sessionId = json.optString("session_id")
+        val requestId = json.optString("request_id")
+        isSessionActive = false
+        val resp = org.json.JSONObject()
+        resp.put("type", "session_destroyed")
+        resp.put("session_id", sessionId)
+        if (requestId.isNotEmpty()) resp.put("request_id", requestId)
+        resp.put("is_session_active", false)
+        ws.send(resp.toString())
+        android.util.Log.d("WebSocket", "Session destroyed: $sessionId")
+
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            try {
+                MainActivity.flutterMethodChannel?.invokeMethod("close_current_session", null)
+            } catch (e: Exception) {
+                android.util.Log.e("WebSocket", "Failed to invoke close_current_session", e)
+            }
+        }
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            try {
+                MainActivity.flutterMethodChannel?.invokeMethod("mainUpdateTemporaryPassword", null)
+                lastTempPasswordSent = ""
+            } catch (e: Exception) {
+                android.util.Log.e("WebSocket", "Failed to update password on session stop", e)
+            }
+        }
+    }
+
+    private fun handleGetSessionInfo(json: org.json.JSONObject, ws: okhttp3.WebSocket) {
+        val sessionId = json.optString("session_id")
+        val requestId = json.optString("request_id")
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            getServerPasswordWithRetry(previous = null) { finalPassword ->
+                getRustdeskIdWithRetry { rustId ->
+                    val safePassword = finalPassword.trim()
+                    val resp = org.json.JSONObject()
+                    resp.put("type", "session_info")
+                    if (sessionId.isNotEmpty()) resp.put("session_id", sessionId)
+                    resp.put("status", if (isSessionActive) "active" else "inactive")
+                    resp.put("temporary_password", safePassword)
+                    resp.put("rustdesk_id", rustId)
+                    resp.put("is_session_active", isSessionActive)
+                    if (requestId.isNotEmpty()) resp.put("request_id", requestId)
+                    ws.send(resp.toString())
+                }
+            }
+        }
+    }
+
+    private fun handleGetDeviceInfo(json: org.json.JSONObject, ws: okhttp3.WebSocket) {
+        val requestId = json.optString("request_id")
+        val resp = org.json.JSONObject()
+        resp.put("type", "device_info")
+        resp.put("device_id", getDeviceUniqueId())
+        resp.put("device_ip", getExternalIpAddress())
+        resp.put("network_type", getNetworkType())
+        resp.put("location", getDeviceLocation())
+        resp.put("current_otp", getCurrentOtp())
+        resp.put("manufacturer", android.os.Build.MANUFACTURER)
+        resp.put("model", android.os.Build.MODEL)
+        resp.put("version", android.os.Build.VERSION.SDK_INT)
+        resp.put("serial", getDeviceSerial())
+        resp.put("is_session_active", isSessionActive)
+        if (requestId.isNotEmpty()) resp.put("request_id", requestId)
+        ws.send(resp.toString())
+        android.util.Log.d("WebSocket", "Device info sent")
+    }
+
+    private fun handleExtendLease(json: org.json.JSONObject, ws: okhttp3.WebSocket) {
+        val requestId = json.optString("request_id")
+        val minutes = json.optInt("minutes", 0)
+        val resp = org.json.JSONObject()
+        resp.put("type", "lease_extended")
+        resp.put("minutes", minutes)
+        if (requestId.isNotEmpty()) resp.put("request_id", requestId)
+        ws.send(resp.toString())
+    }
+
+    private fun handleReboot(json: org.json.JSONObject, ws: okhttp3.WebSocket) {
+        val requestId = json.optString("request_id")
+        val resp = org.json.JSONObject()
+        resp.put("type", "reboot_ok")
+        if (requestId.isNotEmpty()) resp.put("request_id", requestId)
+        ws.send(resp.toString())
+    }
+
+    private fun handleRestartRemote(json: org.json.JSONObject, ws: okhttp3.WebSocket) {
+        val requestId = json.optString("request_id")
+        try { destroy() } catch (_: Exception) {}
+        val resp = org.json.JSONObject()
+        resp.put("type", "restart_remote_ok")
+        if (requestId.isNotEmpty()) resp.put("request_id", requestId)
+        ws.send(resp.toString())
+    }
+
+    private fun handleClearCache(json: org.json.JSONObject, ws: okhttp3.WebSocket) {
+        val requestId = json.optString("request_id")
+        val ok = try {
+            cacheDir?.deleteRecursively()
+            externalCacheDir?.deleteRecursively()
+            true
+        } catch (e: Exception) {
+            android.util.Log.e("WebSocket", "Failed to clear cache", e)
+            false
+        }
+        val resp = org.json.JSONObject()
+        resp.put("type", if (ok) "clear_cache_ok" else "clear_cache_failed")
+        if (requestId.isNotEmpty()) resp.put("request_id", requestId)
+        ws.send(resp.toString())
+    }
+
+    private fun sendFallbackResponse(ws: okhttp3.WebSocket, sessionId: String, otp: String, requestId: String = "") {
+        getRustdeskIdWithRetry(timeoutMs = 2000L, intervalMs = 100L) { rustId ->
+            val resp = org.json.JSONObject()
+            resp.put("type", "session_started")
+            resp.put("session_id", sessionId)
+            resp.put("temporary_password", otp)
+            resp.put("rustdesk_id", rustId)
+            if (requestId.isNotEmpty()) resp.put("request_id", requestId)
+            resp.put("is_session_active", true)
+            ws.send(resp.toString())
+        }
+    }
+
+    // ── Retry helpers ──────────────────────────────────────────────────────
+
+    private fun getServerPasswordWithRetry(
+        previous: String? = null,
+        timeoutMs: Long = 5000L,
+        intervalMs: Long = 150L,
+        callback: (String) -> Unit
+    ) {
+        val start = System.currentTimeMillis()
+        fun attempt() {
+            MainActivity.flutterMethodChannel?.invokeMethod(
+                "get_server_password", null,
+                object : io.flutter.plugin.common.MethodChannel.Result {
+                    override fun success(passwordResult: Any?) {
+                        val pwd = (passwordResult as? String)?.trim() ?: ""
+                        val fresh = pwd.isNotEmpty() && (previous == null || pwd != previous)
+                        if (fresh) {
+                            callback(pwd)
+                        } else if (System.currentTimeMillis() - start >= timeoutMs) {
+                            callback(pwd)
+                        } else {
+                            wsHandler.postDelayed({ attempt() }, intervalMs)
+                        }
+                    }
+                    override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
+                        if (System.currentTimeMillis() - start >= timeoutMs) callback("")
+                        else wsHandler.postDelayed({ attempt() }, intervalMs)
+                    }
+                    override fun notImplemented() {
+                        if (System.currentTimeMillis() - start >= timeoutMs) callback("")
+                        else wsHandler.postDelayed({ attempt() }, intervalMs)
+                    }
+                })
+        }
+        attempt()
+    }
+
+    private fun getRustdeskIdWithRetry(
+        timeoutMs: Long = 5000L,
+        intervalMs: Long = 150L,
+        callback: (String) -> Unit
+    ) {
+        val start = System.currentTimeMillis()
+        fun attempt() {
+            MainActivity.flutterMethodChannel?.invokeMethod(
+                "get_rustdesk_id", null,
+                object : io.flutter.plugin.common.MethodChannel.Result {
+                    override fun success(result: Any?) {
+                        val id = (result as? String)?.trim().orEmpty()
+                        if (id.isNotEmpty()) callback(id)
+                        else if (System.currentTimeMillis() - start >= timeoutMs) callback("")
+                        else wsHandler.postDelayed({ attempt() }, intervalMs)
+                    }
+                    override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
+                        if (System.currentTimeMillis() - start >= timeoutMs) callback("")
+                        else wsHandler.postDelayed({ attempt() }, intervalMs)
+                    }
+                    override fun notImplemented() { callback("") }
+                })
+        }
+        attempt()
+    }
+
+    // ── Device / network utilities ─────────────────────────────────────────
+
+    internal fun getDeviceUniqueId(): String {
+        val serial = getDeviceSerial().trim()
+        if (serial.isNotEmpty() && !serial.equals("unknown", ignoreCase = true)) return serial
+        val androidId = android.provider.Settings.Secure.getString(
+            contentResolver, android.provider.Settings.Secure.ANDROID_ID
+        )?.trim().orEmpty()
+        if (androidId.isNotEmpty() && !androidId.equals("unknown", ignoreCase = true)) return androidId
+        val prefs = getSharedPreferences("rd_device_prefs", android.content.Context.MODE_PRIVATE)
+        var uuid = prefs.getString("device_uuid", null)
+        if (uuid.isNullOrEmpty()) {
+            uuid = java.util.UUID.randomUUID().toString()
+            prefs.edit().putString("device_uuid", uuid).apply()
+        }
+        return uuid
+    }
+
+    private fun getDeviceSerial(): String {
+        return try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                try { android.os.Build.getSerial() } catch (_: SecurityException) { "" }
+            } else {
+                @Suppress("DEPRECATION")
+                (android.os.Build.SERIAL ?: "")
+            }
+        } catch (_: Exception) { "" }
+    }
+
+    private fun getCurrentOtp(): String {
+        val deviceId = android.provider.Settings.Secure.getString(
+            contentResolver, android.provider.Settings.Secure.ANDROID_ID
+        ) ?: "default"
+        val seed = (System.currentTimeMillis().toString() + deviceId).hashCode()
+        currentOtp = String.format("%06d", kotlin.math.abs(seed) % 1000000)
+        return currentOtp
+    }
+
+    private fun getNetworkType(): String {
+        return try {
+            val cm = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                val net = cm.activeNetwork ?: return "No Connection"
+                val caps = cm.getNetworkCapabilities(net) ?: return "Unknown"
+                when {
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)     -> "WiFi"
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> getCellularNetworkType()
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH)-> "Bluetooth"
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)      -> "VPN"
+                    else -> "Unknown"
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                val info = cm.activeNetworkInfo
+                if (info == null || !info.isConnected) return "No Connection"
+                @Suppress("DEPRECATION")
+                when (info.type) {
+                    ConnectivityManager.TYPE_WIFI      -> "WiFi"
+                    ConnectivityManager.TYPE_MOBILE    -> getCellularNetworkType()
+                    ConnectivityManager.TYPE_ETHERNET  -> "Ethernet"
+                    ConnectivityManager.TYPE_BLUETOOTH -> "Bluetooth"
+                    else -> "Unknown"
+                }
+            }
+        } catch (e: Exception) { "Error" }
+    }
+
+    private fun getCellularNetworkType(): String {
+        return try {
+            val tm = getSystemService(android.content.Context.TELEPHONY_SERVICE) as TelephonyManager
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                when (tm.dataNetworkType) {
+                    TelephonyManager.NETWORK_TYPE_NR    -> "5G"
+                    TelephonyManager.NETWORK_TYPE_LTE   -> "LTE"
+                    TelephonyManager.NETWORK_TYPE_HSPAP,
+                    TelephonyManager.NETWORK_TYPE_HSPA,
+                    TelephonyManager.NETWORK_TYPE_HSUPA,
+                    TelephonyManager.NETWORK_TYPE_HSDPA,
+                    TelephonyManager.NETWORK_TYPE_UMTS  -> "3G"
+                    TelephonyManager.NETWORK_TYPE_EDGE,
+                    TelephonyManager.NETWORK_TYPE_GPRS,
+                    TelephonyManager.NETWORK_TYPE_CDMA,
+                    TelephonyManager.NETWORK_TYPE_1xRTT -> "2G"
+                    else -> "Mobile"
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                when (tm.networkType) {
+                    TelephonyManager.NETWORK_TYPE_LTE   -> "LTE"
+                    TelephonyManager.NETWORK_TYPE_HSPAP,
+                    TelephonyManager.NETWORK_TYPE_HSPA,
+                    TelephonyManager.NETWORK_TYPE_HSUPA,
+                    TelephonyManager.NETWORK_TYPE_HSDPA,
+                    TelephonyManager.NETWORK_TYPE_UMTS  -> "3G"
+                    TelephonyManager.NETWORK_TYPE_EDGE,
+                    TelephonyManager.NETWORK_TYPE_GPRS,
+                    TelephonyManager.NETWORK_TYPE_CDMA,
+                    TelephonyManager.NETWORK_TYPE_1xRTT -> "2G"
+                    else -> "Mobile"
+                }
+            }
+        } catch (e: Exception) { "Mobile" }
+    }
+
+    private fun getExternalIpAddress(): String {
+        return try {
+            val client = okhttp3.OkHttpClient.Builder()
+                .connectTimeout(2, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(2, java.util.concurrent.TimeUnit.SECONDS)
+                .callTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+                .build()
+            val urls = listOf("https://api.ipify.org", "https://checkip.amazonaws.com", "https://ifconfig.me/ip")
+            for (u in urls) {
+                try {
+                    val req = okhttp3.Request.Builder().url(u).build()
+                    client.newCall(req).execute().use { resp ->
+                        if (resp.isSuccessful) {
+                            val body = resp.body?.string()?.trim().orEmpty()
+                            if (body.isNotEmpty() && (body.contains('.') || body.contains(':'))) return body
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+            "unknown"
+        } catch (_: Exception) { "unknown" }
+    }
+
+    private fun getLocalIpAddress(): String {
+        try {
+            val interfaces = java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces())
+            for (intf in interfaces) {
+                for (addr in java.util.Collections.list(intf.inetAddresses)) {
+                    if (!addr.isLoopbackAddress) {
+                        val sAddr = addr.hostAddress
+                        if (sAddr != null && sAddr.indexOf(':') < 0 && !sAddr.startsWith("169.254")) return sAddr
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("WebSocket", "Error getting local IP", e)
+        }
+        return "unknown"
+    }
+
+    private fun getDeviceLocation(): org.json.JSONObject {
+        val obj = org.json.JSONObject()
+        try {
+            val lm = getSystemService(android.content.Context.LOCATION_SERVICE) as android.location.LocationManager
+            if (lm.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)) {
+                val loc = lm.getLastKnownLocation(android.location.LocationManager.NETWORK_PROVIDER)
+                if (loc != null) {
+                    obj.put("latitude", loc.latitude)
+                    obj.put("longitude", loc.longitude)
+                    obj.put("accuracy", loc.accuracy)
+                    obj.put("timestamp", loc.time)
+                } else {
+                    obj.put("status", "location_not_available")
+                }
+            } else {
+                obj.put("status", "location_disabled")
+            }
+        } catch (e: SecurityException) {
+            obj.put("status", "permission_denied")
+        } catch (e: Exception) {
+            obj.put("status", "error")
+        }
+        return obj
     }
 }

@@ -3,9 +3,7 @@ name: Build Android APK (Universal)
 on:
   workflow_dispatch:
   push:
-    branches:
-      - master
-      - new_main
+    branches: [ master ]
 
 env:
   RUST_VERSION: "1.75"
@@ -37,6 +35,13 @@ jobs:
         script: |
           core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
           core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+    - name: Restore Debug Keystore
+      run: |
+        mkdir -p ~/.android
+        echo "${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}" | base64 --decode > ~/.android/debug.keystore
+        chmod 600 ~/.android/debug.keystore
+        echo "✓ Debug keystore restored successfully"
 
     - name: Install dependencies
       run: |

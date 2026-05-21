@@ -28,6 +28,7 @@ import 'consts.dart';
 import 'mobile/pages/home_page.dart';
 import 'mobile/pages/server_page.dart';
 import 'models/platform_model.dart';
+import 'utils/server_config_util.dart';
 
 import 'package:flutter_hbb/plugin/handlers.dart'
     if (dart.library.html) 'package:flutter_hbb/web/plugin/handlers.dart';
@@ -183,8 +184,35 @@ void runMobileApp() async {
   if (isAndroid) androidChannelInit();
   if (isAndroid) platformFFI.syncAndroidServiceAppDirConfigPath();
   draggablePositions.load();
+
+  // Ensure server configuration is set (non-blocking, runs in background)
+  // This prevents slow network requests from blocking app startup
+  ensureServerConfig().timeout(
+    const Duration(seconds: 10),
+    onTimeout: () {
+      debugPrint("Server config initialization timed out");
+      return false;
+    },
+  ).catchError((e) {
+    debugPrint("Error setting server config: $e");
+    return false;
+  });
+
   await Future.wait([gFFI.abModel.loadCache(), gFFI.groupModel.loadCache()]);
   gFFI.userModel.refreshCurrentUser();
+
+  // Ensure service is always running (Android only)
+  if (isAndroid) {
+    try {
+      final autoStart = bind.mainGetLocalOption(key: kOptionAutoStartService);
+      if (autoStart != 'N') {
+        await gFFI.serverModel.ensureServiceAlwaysRunning();
+      }
+    } catch (e) {
+      debugPrint("Error ensuring service is always running: $e");
+    }
+  }
+
   runApp(App());
   await initUniLinks();
 }

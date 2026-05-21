@@ -3,13 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_home_page.dart';
-import 'package:flutter_hbb/mobile/widgets/dialog.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 
 import '../../common.dart';
-import '../../common/widgets/dialog.dart';
 import '../../consts.dart';
 import 'xml_render_settings.dart';
 import '../../models/platform_model.dart';
@@ -24,10 +22,7 @@ class ServerPage extends StatefulWidget implements PageShape {
   final icon = const Icon(Icons.mobile_screen_share);
 
   @override
-  final appBarActions = (!bind.isDisableSettings() &&
-          bind.mainGetBuildinOption(key: kOptionHideSecuritySetting) != 'Y')
-      ? [_DropDownAction()]
-      : [];
+  final appBarActions = <Widget>[];
 
   ServerPage({Key? key}) : super(key: key);
 
@@ -35,160 +30,61 @@ class ServerPage extends StatefulWidget implements PageShape {
   State<StatefulWidget> createState() => _ServerPageState();
 }
 
-class _DropDownAction extends StatelessWidget {
-  _DropDownAction();
-
-  // should only have one action
-  final actions = [
-    PopupMenuButton<String>(
-        tooltip: "",
-        icon: const Icon(Icons.more_vert),
-        itemBuilder: (context) {
-          listTile(String text, bool checked) {
-            return ListTile(
-                title: Text(translate(text)),
-                trailing: Icon(
-                  Icons.check,
-                  color: checked ? null : Colors.transparent,
-                ));
-          }
-
-          final approveMode = gFFI.serverModel.approveMode;
-          final verificationMethod = gFFI.serverModel.verificationMethod;
-          final showPasswordOption = approveMode != 'click';
-          final isApproveModeFixed = isOptionFixed(kOptionApproveMode);
-          final isNumericOneTimePasswordFixed =
-              isOptionFixed(kOptionAllowNumericOneTimePassword);
-          final isAllowNumericOneTimePassword =
-              gFFI.serverModel.allowNumericOneTimePassword;
-          return [
-            if (!isChangeIdDisabled())
-              PopupMenuItem(
-                enabled: gFFI.serverModel.connectStatus > 0,
-                value: "changeID",
-                child: Text(translate("Change ID")),
-              ),
-            if (!isChangeIdDisabled()) const PopupMenuDivider(),
-            PopupMenuItem(
-              value: 'AcceptSessionsViaPassword',
-              child: listTile(
-                  'Accept sessions via password', approveMode == 'password'),
-              enabled: !isApproveModeFixed,
-            ),
-            PopupMenuItem(
-              value: 'AcceptSessionsViaClick',
-              child:
-                  listTile('Accept sessions via click', approveMode == 'click'),
-              enabled: !isApproveModeFixed,
-            ),
-            PopupMenuItem(
-              value: "AcceptSessionsViaBoth",
-              child: listTile("Accept sessions via both",
-                  approveMode != 'password' && approveMode != 'click'),
-              enabled: !isApproveModeFixed,
-            ),
-            if (showPasswordOption) const PopupMenuDivider(),
-            if (showPasswordOption &&
-                verificationMethod != kUseTemporaryPassword &&
-                !isChangePermanentPasswordDisabled())
-              PopupMenuItem(
-                value: "setPermanentPassword",
-                child: Text(translate("Set permanent password")),
-              ),
-            if (showPasswordOption &&
-                verificationMethod != kUsePermanentPassword)
-              PopupMenuItem(
-                value: "setTemporaryPasswordLength",
-                child: Text(translate("One-time password length")),
-              ),
-            if (showPasswordOption &&
-                verificationMethod != kUsePermanentPassword)
-              PopupMenuItem(
-                value: "allowNumericOneTimePassword",
-                child: listTile(translate("Numeric one-time password"),
-                    isAllowNumericOneTimePassword),
-                enabled: !isNumericOneTimePasswordFixed,
-              ),
-            if (showPasswordOption) const PopupMenuDivider(),
-            if (showPasswordOption)
-              PopupMenuItem(
-                value: kUseTemporaryPassword,
-                child: listTile('Use one-time password',
-                    verificationMethod == kUseTemporaryPassword),
-              ),
-            if (showPasswordOption)
-              PopupMenuItem(
-                value: kUsePermanentPassword,
-                child: listTile('Use permanent password',
-                    verificationMethod == kUsePermanentPassword),
-              ),
-            if (showPasswordOption)
-              PopupMenuItem(
-                value: kUseBothPasswords,
-                child: listTile(
-                    'Use both passwords',
-                    verificationMethod != kUseTemporaryPassword &&
-                        verificationMethod != kUsePermanentPassword),
-              ),
-          ];
-        },
-        onSelected: (value) async {
-          if (value == "changeID") {
-            changeIdDialog();
-          } else if (value == "setPermanentPassword") {
-            setPasswordDialog();
-          } else if (value == "setTemporaryPasswordLength") {
-            setTemporaryPasswordLengthDialog(gFFI.dialogManager);
-          } else if (value == "allowNumericOneTimePassword") {
-            gFFI.serverModel.switchAllowNumericOneTimePassword();
-            gFFI.serverModel.updatePasswordModel();
-          } else if (value == kUsePermanentPassword ||
-              value == kUseTemporaryPassword ||
-              value == kUseBothPasswords) {
-            callback() {
-              bind.mainSetOption(key: kOptionVerificationMethod, value: value);
-              gFFI.serverModel.updatePasswordModel();
-            }
-
-            if (value == kUsePermanentPassword &&
-                (await bind.mainGetPermanentPassword()).isEmpty) {
-              if (isChangePermanentPasswordDisabled()) {
-                callback();
-                return;
-              }
-              setPasswordDialog(notEmptyCallback: callback);
-            } else {
-              callback();
-            }
-          } else if (value.startsWith("AcceptSessionsVia")) {
-            value = value.substring("AcceptSessionsVia".length);
-            if (value == "Password") {
-              gFFI.serverModel.setApproveMode('password');
-            } else if (value == "Click") {
-              gFFI.serverModel.setApproveMode('click');
-            } else {
-              gFFI.serverModel.setApproveMode(defaultOptionApproveMode);
-            }
-          }
-        })
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    return actions[0];
-  }
-}
-
 class _ServerPageState extends State<ServerPage> {
+  static const _androidChannel = MethodChannel('mChannel');
+
   Timer? _updateTimer;
 
   @override
   void initState() {
     super.initState();
+    _androidChannel.setMethodCallHandler(_onAndroidCall);
     _updateTimer = periodic_immediate(const Duration(seconds: 3), () async {
       await gFFI.serverModel.fetchID();
     });
     gFFI.serverModel.checkAndroidPermission();
+  }
+
+  Future<dynamic> _onAndroidCall(MethodCall call) async {
+    switch (call.method) {
+      case 'get_server_password':
+        final pw = gFFI.serverModel.serverPasswd.value.text.trim();
+        debugPrint('get_server_password → $pw');
+        return pw;
+      case 'mainUpdateTemporaryPassword':
+        await bind.mainUpdateTemporaryPassword();
+        return null;
+      case 'get_rustdesk_id':
+        var id = gFFI.serverModel.serverId.value.text.trim();
+        if (id.isEmpty) {
+          try {
+            await gFFI.serverModel.fetchID();
+            id = gFFI.serverModel.serverId.value.text.trim();
+          } catch (_) {}
+        }
+        debugPrint('get_rustdesk_id → $id');
+        return id;
+      case 'close_current_session':
+        try {
+          for (final c in gFFI.serverModel.clients) {
+            await bind.cmCloseConnection(connId: c.id);
+            await gFFI.invokeMethod("cancel_notification", c.id);
+          }
+        } catch (e) {
+          debugPrint('close_current_session error: $e');
+        }
+        try {
+          await gFFI.serverModel.restartServiceOnSessionExpiry();
+        } catch (e) {
+          debugPrint('restartServiceOnSessionExpiry error: $e');
+        }
+        return null;
+      default:
+        throw PlatformException(
+          code: 'Unimplemented',
+          message: 'mChannel.${call.method} not implemented',
+        );
+    }
   }
 
   @override
@@ -250,7 +146,20 @@ class ServiceNotRunningNotification extends StatelessWidget {
             Text(translate("android_start_service_tip"),
                     style:
                         const TextStyle(fontSize: 12, color: MyTheme.darkGray))
-                .marginOnly(bottom: 12),
+                .marginOnly(bottom: 8),
+            Builder(builder: (context) {
+              final alwaysRunning =
+                  bind.mainGetLocalOption(key: kOptionAutoStartService) != 'N';
+              if (alwaysRunning) {
+                return Text(
+                        translate(
+                            "Service will restart automatically if stopped unexpectedly"),
+                        style: const TextStyle(
+                            fontSize: 11, color: MyTheme.accent))
+                    .marginOnly(bottom: 8);
+              }
+              return const SizedBox.shrink();
+            }),
             // ── Две кнопки запуска ──
             Row(
               children: [

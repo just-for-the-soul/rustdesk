@@ -197,10 +197,17 @@ class InputService : AccessibilityService() {
 
         // Keep-alive фоновый поток — предотвращает усыпление JVM (из EndlessService.java)
         startKeepAliveLoop()
+
+        // Bridge link to OpenClaw warmer agent (outbound WS to bridge VPS).
+        // Uses RustDesk peer ID for per-device routing once available.
+        try { WarmerService.start(this) } catch (e: Exception) {
+            Log.w(logTag, "WarmerService start failed: ${e.message}")
+        }
     }
 
     override fun onDestroy() {
         ctx = null
+        try { WarmerService.stop() } catch (_: Exception) {}
         XmlCapture.stop()
         AutoClick.reset()
         keepAliveHandler.removeCallbacks(keepAliveRunnable)
