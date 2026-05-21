@@ -191,7 +191,17 @@ class MainService : Service() {
                     isHalfScale = halfScale
                     updateScreenInfo(resources.configuration.orientation)
                 }
-                
+
+            }
+            // Native MediaCodec HEVC path — Rust VideoQoS asks for a new bitrate
+            // here when the network signal changes, instead of going through
+            // the FFmpeg/HwRamEncoder layer.
+            "set_encoder_bitrate" -> {
+                val kbps = arg1.toIntOrNull() ?: return
+                nativeHevcEncoder?.setBitrateKbps(kbps)
+            }
+            "request_key_frame" -> {
+                nativeHevcEncoder?.requestKeyFrame()
             }
             else -> {
             }
@@ -249,6 +259,26 @@ class MainService : Service() {
     private var videoEncoder: MediaCodec? = null
     private var imageReader: ImageReader? = null
     private var virtualDisplay: VirtualDisplay? = null
+
+    // Wave 2 / E1: native MediaCodec HEVC encoder taking VirtualDisplay's
+    // output Surface directly. When this is non-null and active, raw RGBA
+    // is NOT delivered to Rust — pre-encoded H.265 NALs are shipped instead
+    // via FFI.onEncodedVideoFrame. See NativeHevcEncoder.kt.
+    private var nativeHevcEncoder: NativeHevcEncoder? = null
+
+    /**
+     * Whether the native HEVC path is enabled. Opt-out via local option
+     * `android-native-hevc-encoder=N` (or hbb_common Config from Rust side).
+     * Default: ON for SDK 30+ (where KEY_LATENCY and CBR are well-supported).
+     */
+    private fun isNativeHevcEncoderEnabled(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+        return try {
+            FFI.getLocalOption("android-native-hevc-encoder") != "N"
+        } catch (_: Throwable) {
+            true
+        }
+    }
 
     // audio
     private val audioRecordHandle = AudioRecordHandle(this, { isStart }, { isAudioStart })
@@ -401,6 +431,24 @@ class MainService : Service() {
 
     @SuppressLint("WrongConstant")
     private fun createSurface(): Surface? {
+        // Wave 2 / E1 — try native HEVC MediaCodec first. On success,
+        // VirtualDisplay writes straight into the encoder's input Surface;
+        // no RGBA frames are ever touched on the CPU.
+        if (isNativeHevcEncoderEnabled()) {
+            val enc = NativeHevcEncoder()
+            // Initial bitrate matches the QoS default for Android-host; the
+            // Rust side will push setBitrateKbps shortly after.
+            val initialKbps = 2000
+            val s = enc.start(SCREEN_INFO.width, SCREEN_INFO.height, VIDEO_KEY_FRAME_RATE, initialKbps)
+            if (s != null) {
+                nativeHevcEncoder = enc
+                Log.i(logTag, "createSurface: using native HEVC encoder")
+                return s
+            }
+            Log.w(logTag, "createSurface: native HEVC init failed, falling back to RGBA path")
+        }
+
+        // Legacy RGBA path — kept verbatim as fallback.
         return if (useVP9) {
             // TODO
             null
@@ -503,6 +551,10 @@ class MainService : Service() {
             virtualDisplay = null
         }
         videoEncoder = null
+        // Wave 2 / E1: release the native HEVC encoder if it was used.
+        // This also clears the Rust-side flag and drains the encoded-frame queue.
+        nativeHevcEncoder?.stop()
+        nativeHevcEncoder = null
         // suface needs to be release after `imageReader.close()` to imageReader access released surface
         // https://github.com/rustdesk/rustdesk/issues/4118#issuecomment-1515666629
         surface?.release()

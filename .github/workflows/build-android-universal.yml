@@ -11,7 +11,7 @@ on:
 env:
   RUST_VERSION: "1.75"
   CARGO_NDK_VERSION: "3.1.2"
-  FLUTTER_VERSION: "3.24.5"
+  FLUTTER_VERSION: "3.27.4"
   NDK_VERSION: "r27c"
   VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
   VERSION: "1.4.5"
@@ -24,13 +24,19 @@ jobs:
     - name: Free Disk Space
       uses: jlumbroso/free-disk-space@main
       with:
-        tool-cache: false
+        # Aggressive cleanup. GitHub ubuntu-24.04 runners ship with ~14 GB free
+        # on /; the Universal APK pulls vcpkg (libvpx/libyuv/libaom/opus) for
+        # arm64 + armv7, NDK, Flutter SDK, and Rust target dirs, easily 18+ GB
+        # combined. Without tool-cache/large-packages/swap reclamation we hit
+        # "No space left on device" during the Flutter build APK step.
+        # Keep `android: false` — we NEED the Android SDK.
+        tool-cache: true
         android: false
         dotnet: true
         haskell: true
-        large-packages: false
+        large-packages: true
         docker-images: true
-        swap-storage: false
+        swap-storage: true
 
     - name: Export GitHub Actions cache environment variables
       uses: actions/github-script@v6
@@ -72,6 +78,10 @@ jobs:
       run: |
         cd $(dirname $(dirname $(which flutter)))
         [[ "3.24.5" == "${{ env.FLUTTER_VERSION }}" ]] && git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff || true
+
+    - name: Wipe pub advisories cache (workaround dart-lang/pub null-check bug)
+      run: |
+        rm -rf "$HOME/.pub-cache/_pub_cache/_advisories_" "$HOME/.pub-cache/advisories" || true
 
     - name: Setup NDK
       uses: nttld/setup-ndk@v1
@@ -368,6 +378,10 @@ jobs:
         sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
 
         cd flutter
+        # Workaround for dart-lang/pub bug: "Null check operator used on a null
+        # value" inside HostedSource._getAdvisories.readAdvisoriesFromCache.
+        # Wipe the advisories cache so pub regenerates it cleanly on get.
+        rm -rf "$HOME/.pub-cache/_pub_cache/_advisories_" "$HOME/.pub-cache/advisories" || true
         flutter pub get
         flutter build apk --release --target-platform android-arm64,android-arm
 

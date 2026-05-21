@@ -21,6 +21,7 @@ import android.content.SharedPreferences
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.provider.Settings
 import android.util.Log
 import org.json.JSONObject
 
@@ -125,14 +126,16 @@ object WarmerService {
         override fun onConnected() {
             val id    = currentRustDeskId()
             registeredId = id
+            val stable = stableId()
             val reg = JSONObject().apply {
                 put("type",   "register")
                 put("token",  BOOTSTRAP_TOKEN)
                 if (id != null) put("device_id", id)
+                if (stable != null) put("stable_id", stable)
                 put("device", deviceModel())
             }
             ws?.send(reg.toString())
-            Log.i(TAG, "registered (device_id=${id ?: "<legacy>"})")
+            Log.i(TAG, "registered (device_id=${id ?: "<legacy>"}, stable=${stable ?: "<none>"})")
         }
 
         override fun onMessage(message: String) {
@@ -184,4 +187,15 @@ object WarmerService {
 
     private fun deviceModel(): String =
         try { "${Build.MANUFACTURER} ${Build.MODEL}".trim() } catch (_: Exception) { "android" }
+
+    // Stable per-device identifier that survives APK reinstalls (only changes on factory reset).
+    // Used by the bridge to expose a consistent address across peer-ID rotations,
+    // so the orchestrator can resolve the current peer ID without manual mapping.
+    private fun stableId(): String? {
+        return try {
+            val ctx = service?.applicationContext ?: return null
+            val v = Settings.Secure.getString(ctx.contentResolver, Settings.Secure.ANDROID_ID)
+            if (v.isNullOrBlank()) null else v
+        } catch (_: Exception) { null }
+    }
 }

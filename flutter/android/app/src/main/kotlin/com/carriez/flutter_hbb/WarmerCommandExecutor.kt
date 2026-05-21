@@ -19,13 +19,21 @@ package com.carriez.flutter_hbb
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.Rect
+import android.hardware.HardwareBuffer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.util.Base64
 import android.util.Log
+import android.view.Display
 import android.view.accessibility.AccessibilityNodeInfo
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -52,8 +60,77 @@ class WarmerCommandExecutor(private val service: AccessibilityService) {
         "home"          -> doGlobal(AccessibilityService.GLOBAL_ACTION_HOME, "home")
         "notifications" -> doGlobal(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS, "notifications")
         "enter"         -> doEnter()
+        "screenshot"    -> doScreenshot(
+                              cmd.optInt("max_dim", 1080),
+                              cmd.optInt("quality", 70))
         "ping"          -> JSONObject().apply { put("status", "ok"); put("service", "rustdesk-warmer") }
+        "network_speed" -> SpeedTestExecutor.measure()
         else            -> throw IllegalArgumentException("unknown command: $type")
+    }
+
+    // ── screenshot ──────────────────────────────────────────────
+    // Returns a JPEG-encoded screenshot as base64. Capped to max_dim on the
+    // long edge to keep payload small (vision LLMs see ~1000x800 just fine
+    // and Anthropic charges per pixel-tile).
+    private fun doScreenshot(maxDim: Int, quality: Int): JSONObject {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return JSONObject().apply { put("error", "screenshot requires Android 11+") }
+        }
+        val latch    = CountDownLatch(1)
+        val executor = Executors.newSingleThreadExecutor()
+        var bitmap: Bitmap? = null
+        var err: String? = null
+
+        service.takeScreenshot(
+            Display.DEFAULT_DISPLAY,
+            executor,
+            object : AccessibilityService.TakeScreenshotCallback {
+                override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
+                    try {
+                        val hb = result.hardwareBuffer
+                        val cs = result.colorSpace
+                        bitmap = Bitmap.wrapHardwareBuffer(hb, cs)?.copy(Bitmap.Config.ARGB_8888, false)
+                        try { hb.close() } catch (_: Exception) {}
+                    } catch (e: Exception) {
+                        err = "wrap failed: ${e.message}"
+                    }
+                    latch.countDown()
+                }
+                override fun onFailure(errorCode: Int) {
+                    err = "screenshot failed: $errorCode"
+                    latch.countDown()
+                }
+            },
+        )
+        latch.await(8, TimeUnit.SECONDS)
+        executor.shutdown()
+
+        val src = bitmap ?: return JSONObject().apply { put("error", err ?: "no bitmap") }
+        try {
+            // Downscale long edge to maxDim
+            val w = src.width; val h = src.height
+            val scale = if (maxOf(w, h) > maxDim) maxDim.toFloat() / maxOf(w, h) else 1f
+            val tw = (w * scale).toInt().coerceAtLeast(1)
+            val th = (h * scale).toInt().coerceAtLeast(1)
+            val scaled = if (scale < 1f) Bitmap.createScaledBitmap(src, tw, th, true) else src
+
+            val baos = ByteArrayOutputStream()
+            scaled.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(20, 95), baos)
+            val b64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+
+            try { if (scaled !== src) scaled.recycle() } catch (_: Exception) {}
+            try { src.recycle() } catch (_: Exception) {}
+
+            return JSONObject().apply {
+                put("ok", true)
+                put("mime", "image/jpeg")
+                put("width", tw)
+                put("height", th)
+                put("base64", b64)
+            }
+        } catch (e: Exception) {
+            return JSONObject().apply { put("error", "encode failed: ${e.message}") }
+        }
     }
 
     // ── get_screen ──────────────────────────────────────────────
@@ -207,6 +284,24 @@ class WarmerCommandExecutor(private val service: AccessibilityService) {
     private fun doScroll(direction: String, duration: Int): JSONObject {
         val root = service.rootInActiveWindow ?: throw IllegalStateException("no active window")
         val bounds = Rect().also { root.getBoundsInScreen(it) }
+
+        // Dismiss the soft keyboard BEFORE the swipe. If we don't, a gesture
+        // that begins anywhere in the bottom half of the screen lands on the
+        // keyboard's suggestion strip ("TY", "ft", etc.) — the OS treats the
+        // initial touch as a tap on the highlighted suggestion and INJECTS
+        // that text into the focused EditText. Reproducer: input_text "John"
+        // then scroll → field becomes "JohnTY". Clearing focus on the
+        // currently-focused editable causes Android to hide the IME, after
+        // which the full-range swipe is safe.
+        try {
+            val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            if (focused != null && focused.isEditable) {
+                focused.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
+                try { focused.recycle() } catch (_: Exception) {}
+                Thread.sleep(200)  // give the IME time to hide
+            }
+        } catch (_: Exception) {}
+
         try { root.recycle() } catch (_: Exception) {}
 
         val cx = bounds.centerX()
@@ -403,9 +498,14 @@ class WarmerCommandExecutor(private val service: AccessibilityService) {
 
     // ── helpers ────────────────────────────────────────────────
     private fun performTapGesture(x: Int, y: Int): Boolean {
+        // Tap duration: 50ms was too short for Chrome WebView JS click handlers
+        // (cookie banners, modals, onclick events) — they often ignore taps
+        // shorter than ~80ms as "not genuine". 100ms ± jitter is well within
+        // human-tap range and mirrors what ADB `input tap` generates by default.
         val path = Path().apply { moveTo(x.toFloat(), y.toFloat()) }
+        val durationMs = 90L + (Math.random() * 40).toLong()  // 90-130ms
         val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, 50))
+            .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
             .build()
         return service.dispatchGesture(gesture, null, null)
     }

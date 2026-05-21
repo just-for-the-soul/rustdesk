@@ -338,7 +338,12 @@ impl Subscriber for ConnInner {
     }
 }
 
-const TEST_DELAY_TIMEOUT: Duration = Duration::from_secs(1);
+// TestDelay tick interval. Each tick sends a TestDelay message (if none in-flight)
+// and feeds the round-trip back into VideoQoS so ABR can adapt fps/bitrate.
+// Shorter = faster reaction to mobile-network jitter spikes (LTE/5G), at the cost
+// of a few extra tiny messages per second. 400ms is well below the worst-case RTT
+// we care about (200-300ms) and gives ~2x faster recovery from delay bursts.
+const TEST_DELAY_TIMEOUT: Duration = Duration::from_millis(400);
 const SEC30: Duration = Duration::from_secs(30);
 const H1: Duration = Duration::from_secs(3600);
 const MILLI1: Duration = Duration::from_millis(1);

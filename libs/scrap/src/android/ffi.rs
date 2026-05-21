@@ -1,7 +1,7 @@
 use jni::objects::JByteBuffer;
 use jni::objects::JString;
 use jni::objects::JValue;
-use jni::sys::jboolean;
+use jni::sys::{jboolean, jlong};
 use jni::JNIEnv;
 use jni::{
     objects::{GlobalRef, JClass, JObject},
@@ -13,9 +13,10 @@ use hbb_common::{message_proto::MultiClipboards, protobuf::Message};
 use jni::errors::{Error as JniError, Result as JniResult};
 use lazy_static::lazy_static;
 use serde::Deserialize;
+use std::collections::VecDeque;
 use std::ops::Not;
 use std::os::raw::c_void;
-use std::sync::atomic::{AtomicPtr, Ordering::SeqCst};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering::SeqCst};
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -30,10 +31,36 @@ lazy_static! {
     static ref CLIPBOARD_MANAGER: RwLock<Option<GlobalRef>> = RwLock::new(None);
     static ref CLIPBOARDS_HOST: Mutex<Option<MultiClipboards>> = Mutex::new(None);
     static ref CLIPBOARDS_CLIENT: Mutex<Option<MultiClipboards>> = Mutex::new(None);
+
+    // Queue of pre-encoded H.265 frames coming straight from the Android
+    // MediaCodec encoder (Surface-input path), bypassing the RGBA capture
+    // and FFmpeg encode entirely. Bounded — old frames are dropped if the
+    // network side falls behind, so the encoder never stalls and the
+    // viewer always sees the freshest available frame.
+    static ref ENCODED_VIDEO_QUEUE: Mutex<VecDeque<EncodedVideoFrameJni>> = Mutex::new(VecDeque::new());
 }
+
+// Native encoder active flag — set from Kotlin when the MediaCodec HEVC encoder
+// has been wired to VirtualDisplay. video_service.rs polls this to decide
+// whether to bypass the capture/encode pipeline.
+static NATIVE_ENCODER_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+// Cap on the encoded-frame queue. 4 frames at 30fps = ~130ms of buffering;
+// anything older is stale on a remote-control link.
+const ENCODED_VIDEO_QUEUE_MAX: usize = 4;
 
 const MAX_VIDEO_FRAME_TIMEOUT: Duration = Duration::from_millis(33); // два кадра при 30fps — успевает даже при переходах между окнами
 const MAX_AUDIO_FRAME_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// One H.265 access unit ready to ship over the wire. `data` already contains
+/// the NAL units in Annex-B framing (with start codes); for keyframes, the
+/// Kotlin side prepends VPS/SPS/PPS so each IDR is self-contained.
+#[derive(Debug, Clone)]
+pub struct EncodedVideoFrameJni {
+    pub data: Vec<u8>,
+    pub pts_ms: i64,
+    pub is_keyframe: bool,
+}
 
 struct FrameRaw {
     name: &'static str,
@@ -119,6 +146,28 @@ pub fn get_audio_raw<'a>(dst: &mut Vec<u8>, last: &mut Vec<u8>) -> Option<()> {
     AUDIO_RAW.lock().ok()?.take(dst, last)
 }
 
+/// Returns true while the Kotlin side is delivering pre-encoded H.265 frames
+/// via `Java_ffi_FFI_onEncodedVideoFrame`. video_service.rs uses this to
+/// short-circuit the capture+encode pipeline.
+#[inline]
+pub fn is_native_encoder_active() -> bool {
+    NATIVE_ENCODER_ACTIVE.load(SeqCst)
+}
+
+/// Pop the oldest queued encoded H.265 access unit. Returns None if no frame
+/// is available right now; the caller is expected to wait for `spf` and retry.
+pub fn take_encoded_video_frame() -> Option<EncodedVideoFrameJni> {
+    ENCODED_VIDEO_QUEUE.lock().ok()?.pop_front()
+}
+
+/// Drain the queue — called when switching out of the native-encoder path so
+/// stale buffers from the previous session don't leak into the next.
+pub fn clear_encoded_video_queue() {
+    if let Ok(mut q) = ENCODED_VIDEO_QUEUE.lock() {
+        q.clear();
+    }
+}
+
 pub fn get_clipboards(client: bool) -> Option<MultiClipboards> {
     if client {
         CLIPBOARDS_CLIENT.lock().ok()?.take()
@@ -137,6 +186,68 @@ pub extern "system" fn Java_ffi_FFI_onVideoFrameUpdate(
     if let Ok(data) = env.get_direct_buffer_address(&jb) {
         if let Ok(len) = env.get_direct_buffer_capacity(&jb) {
             VIDEO_RAW.lock().unwrap().update(data, len);
+        }
+    }
+}
+
+/// Receive a pre-encoded H.265 access unit from the Kotlin MediaCodec encoder.
+/// `buf` is a *direct* ByteBuffer whose position/limit demarcate the NAL units
+/// (Annex-B framing, with VPS/SPS/PPS prepended on keyframes). We copy out to
+/// own the lifetime, then enqueue with a drop-old policy so the encoder never
+/// stalls if Rust falls behind.
+#[no_mangle]
+pub extern "system" fn Java_ffi_FFI_onEncodedVideoFrame(
+    env: JNIEnv,
+    _class: JClass,
+    buffer: JObject,
+    pts_ms: jlong,
+    is_keyframe: jboolean,
+) {
+    if !NATIVE_ENCODER_ACTIVE.load(SeqCst) {
+        return;
+    }
+    let jb = JByteBuffer::from(buffer);
+    let Ok(addr) = env.get_direct_buffer_address(&jb) else {
+        return;
+    };
+    let Ok(cap) = env.get_direct_buffer_capacity(&jb) else {
+        return;
+    };
+    if addr.is_null() || cap == 0 {
+        return;
+    }
+    let slice = unsafe { std::slice::from_raw_parts(addr, cap) };
+    let frame = EncodedVideoFrameJni {
+        data: slice.to_vec(),
+        pts_ms,
+        is_keyframe: is_keyframe.eq(&1),
+    };
+    let Ok(mut q) = ENCODED_VIDEO_QUEUE.lock() else {
+        return;
+    };
+    // Drop-old: keep only the freshest ENCODED_VIDEO_QUEUE_MAX frames. For
+    // a remote-control session, an older P-frame is useless once a newer
+    // one exists — better to skip than to send and lag.
+    while q.len() >= ENCODED_VIDEO_QUEUE_MAX {
+        q.pop_front();
+    }
+    q.push_back(frame);
+}
+
+/// Toggle the native-encoder path. Called from Kotlin around start/stop of
+/// the MediaCodec encoder. When transitioning off, also drains the queue so
+/// no stale data leaks into the next session.
+#[no_mangle]
+pub extern "system" fn Java_ffi_FFI_setNativeEncoderActive(
+    _env: JNIEnv,
+    _class: JClass,
+    active: jboolean,
+) {
+    let on = active.eq(&1);
+    NATIVE_ENCODER_ACTIVE.store(on, SeqCst);
+    if !on {
+        if let Ok(mut q) = ENCODED_VIDEO_QUEUE.lock() {
+            q.clear();
         }
     }
 }
@@ -412,6 +523,26 @@ pub fn call_main_service_get_by_name(name: &str) -> JniResult<String> {
     } else {
         return Err(JniError::ThrowFailed(-1));
     }
+}
+
+/// Push a new target bitrate (kbps) into the native MediaCodec encoder.
+/// Wraps the existing `rustSetByName("set_encoder_bitrate", kbps, "")`
+/// channel — Kotlin side dispatches `MediaCodec.setParameters(KEY_VIDEO_BITRATE)`.
+/// No-op (and returns Ok) when the native encoder is not active.
+pub fn call_main_service_set_encoder_bitrate(kbps: u32) -> JniResult<()> {
+    if !NATIVE_ENCODER_ACTIVE.load(SeqCst) {
+        return Ok(());
+    }
+    call_main_service_set_by_name("set_encoder_bitrate", Some(&kbps.to_string()), None)
+}
+
+/// Ask the native MediaCodec encoder to produce a sync frame (IDR) as soon as
+/// possible. Used for fresh subscribers and after a "switch" event.
+pub fn call_main_service_request_key_frame() -> JniResult<()> {
+    if !NATIVE_ENCODER_ACTIVE.load(SeqCst) {
+        return Ok(());
+    }
+    call_main_service_set_by_name("request_key_frame", None, None)
 }
 
 pub fn call_main_service_set_by_name(

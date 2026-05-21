@@ -38,6 +38,10 @@ use hbb_common::{
         Mutex as TokioMutex,
     },
 };
+// Wave 2 / E1 — needed for the native HEVC bypass path (wraps pre-encoded
+// NAL bytes into a VideoFrame::H265s without going through a Rust encoder).
+#[cfg(target_os = "android")]
+use bytes::Bytes;
 #[cfg(feature = "hwcodec")]
 use scrap::hwcodec::{HwRamEncoder, HwRamEncoderConfig};
 #[cfg(feature = "vram")]
@@ -651,6 +655,11 @@ fn run(vs: VideoService) -> ResultType<()> {
     let capture_width = c.width;
     let capture_height = c.height;
     let (mut second_instant, mut send_counter) = (Instant::now(), 0);
+    // Wave 2 / E1: tracks the last bitrate we pushed to the native MediaCodec
+    // encoder so we don't churn setParameters on every QoS tick — only when
+    // the target actually changes.
+    #[cfg(target_os = "android")]
+    let mut last_pushed_kbps: u32 = 0;
 
     while sp.ok() {
         #[cfg(windows)]
@@ -717,6 +726,88 @@ fn run(vs: VideoService) -> ResultType<()> {
 
         let time = now - start;
         let ms = (time.as_secs() * 1000 + time.subsec_millis() as u64) as i64;
+
+        // Wave 2 / E1 — native MediaCodec HEVC bypass. When Kotlin has wired
+        // VirtualDisplay -> MediaCodec.createInputSurface() (see
+        // NativeHevcEncoder.kt + MainService.createSurface), pre-encoded H.265
+        // access units arrive via the JNI queue. We skip capture+encoder
+        // entirely and ship the bytes straight to the wire.
+        //
+        // The flag is set/cleared from Kotlin, so this branch can be entered
+        // mid-loop (e.g. when capture starts after the first peer subscribes).
+        // If the encoder fails at runtime, Kotlin flips the flag back off and
+        // we fall through to the legacy capturer/encoder path on the next tick.
+        //
+        // We also require negotiated_codec == H265: if the renter switches
+        // their preferred codec to anything else, fall back to the legacy path
+        // (the codec_format != negotiated_codec check above will SWITCH us).
+        #[cfg(target_os = "android")]
+        if scrap::android::ffi::is_native_encoder_active()
+            && codec_format == CodecFormat::H265
+        {
+            // New-subscriber handling: in the legacy path handle_one_frame
+            // calls sp.snapshot which bails on new subs so setup_encoder runs
+            // again and the next frame is a fresh keyframe. Here the encoder
+            // lives in Kotlin and we can just ask it for an IDR — the
+            // snapshot() call below promotes any new_subscribes into
+            // subscribes via ServiceSwap's Drop, and the requested IDR will
+            // then reach everyone on the next output buffer. The callback is
+            // only invoked when new_subscribes is non-empty, so we always
+            // need a keyframe when we get here.
+            sp.snapshot(|_sps| {
+                let _ = scrap::android::ffi::call_main_service_request_key_frame();
+                Ok(())
+            })?;
+
+            // Push current target bitrate (kbps) when changed. VideoQoS.bitrate()
+            // is the smoothed ABR output; the cap from hwcodec.rs still applies
+            // since we feed it through the same QoS pipeline.
+            let target_kbps = VIDEO_QOS.lock().unwrap().bitrate();
+            if target_kbps > 0 && target_kbps != last_pushed_kbps {
+                let _ = scrap::android::ffi::call_main_service_set_encoder_bitrate(target_kbps);
+                last_pushed_kbps = target_kbps;
+            }
+
+            // Wait up to one frame interval for an encoded NAL. 2ms polling
+            // granularity gives ~6 wake-ups per 12ms frame at 60fps; cheap.
+            let deadline = std::time::Instant::now() + spf;
+            let mut next_frame = None;
+            while std::time::Instant::now() < deadline {
+                if let Some(f) = scrap::android::ffi::take_encoded_video_frame() {
+                    next_frame = Some(f);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+
+            if let Some(f) = next_frame {
+                let mut frames = EncodedVideoFrames::new();
+                frames.frames.push(EncodedVideoFrame {
+                    data: Bytes::from(f.data),
+                    pts: f.pts_ms,
+                    key: f.is_keyframe,
+                    ..Default::default()
+                });
+                let mut vf = VideoFrame::new();
+                vf.set_h265s(frames);
+                vf.display = display_idx as _;
+                let mut msg = Message::new();
+                msg.set_video_frame(vf);
+                recorder
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .map(|r| r.write_message(&msg, capture_width, capture_height));
+                let send_conn_ids = sp.send_video_frame(msg);
+                frame_controller.set_send(now, send_conn_ids);
+                send_counter += 1;
+            }
+            // send_counter is read by check_qos() at the top of each tick,
+            // which already calls VIDEO_QOS.update_display_data, so we don't
+            // need to call it directly here.
+            continue;
+        }
+
         let res = match c.frame(spf) {
             Ok(frame) => {
                 repeat_encode_counter = 0;

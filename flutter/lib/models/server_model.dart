@@ -242,12 +242,22 @@ class ServerModel with ChangeNotifier {
   /// file true by default (if permission on)
   checkAndroidPermission() async {
     // audio
+    // Default OFF for rental scenarios: every byte counts on a mobile uplink,
+    // and renters almost never want phone-side audio. User can still flip it
+    // on via the toggle in InputService notification — opt-in, not opt-out.
+    // We achieve "default OFF" by persisting 'N' on first launch (when the
+    // option is empty); afterwards the standard option2bool semantics apply.
     if (androidVersion < 30 ||
         !await AndroidPermissionManager.check(kRecordAudio)) {
       _audioOk = false;
       bind.mainSetOption(key: kOptionEnableAudio, value: "N");
     } else {
-      final audioOption = await bind.mainGetOption(key: kOptionEnableAudio);
+      var audioOption = await bind.mainGetOption(key: kOptionEnableAudio);
+      if (audioOption.isEmpty) {
+        // First-launch default: OFF for Android hosts (was ON in upstream).
+        await bind.mainSetOption(key: kOptionEnableAudio, value: "N");
+        audioOption = "N";
+      }
       _audioOk = audioOption != 'N';
     }
 
