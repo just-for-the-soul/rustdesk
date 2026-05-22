@@ -317,7 +317,7 @@ class MainService : Service() {
     override fun onDestroy() {
         checkMediaPermission()
         disconnectWebSocket()
-        stopService(Intent(this, FloatingWindowService::class.java))
+        //stopService(Intent(this, FloatingWindowService::class.java))
         super.onDestroy()
     }
 
@@ -580,7 +580,7 @@ class MainService : Service() {
         checkMediaPermission()
         instance = null
         stopForeground(true)
-        stopService(Intent(this, FloatingWindowService::class.java))
+        // stopService(Intent(this, FloatingWindowService::class.java))
         stopSelf()
     }
 

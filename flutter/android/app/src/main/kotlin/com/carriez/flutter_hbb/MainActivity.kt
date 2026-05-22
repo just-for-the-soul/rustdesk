@@ -409,7 +409,7 @@ class MainActivity : FlutterActivity() {
                     result.success("")
                 }
                 "show_privacy_screen" -> {
-                    PrivacyScreenService.show(this)
+                    PrivacyScreenService.hide(this)
                     result.success(null)
                 }
                 "hide_privacy_screen" -> {
@@ -510,9 +510,9 @@ class MainActivity : FlutterActivity() {
 
     override fun onStop() {
         super.onStop()
-        if (FFI.getLocalOption("disable-floating-window") != "Y" && MainService.isReady) {
-            startService(Intent(this, FloatingWindowService::class.java))
-        }
+        // if (FFI.getLocalOption("disable-floating-window") != "Y" && MainService.isReady) {
+        //   startService(Intent(this, FloatingWindowService::class.java))
+        // }
     }
 
     override fun onStart() {
