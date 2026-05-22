@@ -61,10 +61,11 @@ object AutoClick {
     // Точка входа
     // -----------------------------------------------------------------------
     // Добавляем allRoots — список всех окон для поиска дропдауна
+    // AutoClick.kt — изменить сигнатуру
     fun handleEvent(
         pkg: String,
         root: android.view.accessibility.AccessibilityNodeInfo,
-        allRoots: List<android.view.accessibility.AccessibilityNodeInfo>?  // ← новый параметр
+        allRoots: List<android.view.accessibility.AccessibilityNodeInfo>? = null  // ← default = null
     ) {
         try {
             val isSystemPkg = pkg.startsWith("com.android") || pkg.startsWith("android") ||
