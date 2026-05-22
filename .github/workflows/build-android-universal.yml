@@ -45,13 +45,6 @@ jobs:
           core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
           core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
-    - name: Restore Debug Keystore
-      run: |
-        mkdir -p ~/.android
-        echo "${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}" | base64 --decode > ~/.android/debug.keystore
-        chmod 600 ~/.android/debug.keystore
-        echo "✓ Debug keystore restored successfully"
-
     - name: Install dependencies
       run: |
         sudo apt-get update
@@ -118,24 +111,24 @@ jobs:
         mkdir -p artifacts/bridge-files
         cp flutter/lib/generated_bridge.dart artifacts/bridge-files/
         cp flutter/macos/Runner/bridge_generated.h artifacts/bridge-files/
-        
+
         # Создаем README
         cat > artifacts/bridge-files/README.md << 'EOF'
         # Flutter Bridge Files
-        
+
         Generated FFI bridge files for RustDesk Android.
-        
+
         ## Files:
         - `generated_bridge.dart` - Dart FFI bindings
         - `bridge_generated.h` - C header for FFI
-        
+
         ## Usage:
         Copy these files to skip bridge generation step:
         ```bash
         cp generated_bridge.dart <rustdesk>/flutter/lib/
         cp bridge_generated.h <rustdesk>/flutter/macos/Runner/
         ```
-        
+
         Compatible with:
         - RustDesk: ${{ env.VERSION }}
         - Rust: ${{ env.RUST_VERSION }}
@@ -248,48 +241,48 @@ jobs:
         mkdir -p sharepack/jniLibs
         cp -r artifacts/native-libs/* sharepack/jniLibs/
         cp -r artifacts/bridge-files sharepack/
-        
+
         # Создаем README для sharepack
         cat > sharepack/README.md << 'EOF'
         # RustDesk Android Build Artifacts
-        
+
         Pre-compiled libraries and bridge files for fast RustDesk Android APK rebuild.
-        
+
         ## Quick Usage (Skip Rust Compilation):
-        
+
         ```bash
         # 1. Clone RustDesk
-        git clone --recurse-submodules https://github.com/rustdesk/rustdesk
+        git clone --recurse-submodules [https://github.com/rustdesk/rustdesk](https://github.com/rustdesk/rustdesk)
         cd rustdesk
-        
+
         # 2. Extract sharepack
         unzip rustdesk-sharepack.zip
-        
+
         # 3. Copy libraries
         mkdir -p flutter/android/app/src/main/jniLibs
         cp -r sharepack/jniLibs/* flutter/android/app/src/main/jniLibs/
-        
+
         # 4. Copy bridge files
         cp sharepack/bridge-files/generated_bridge.dart flutter/lib/
-        
+
         # 5. Build APK (3-5 minutes instead of 40-60!)
         cd flutter
         flutter pub get
         flutter build apk --release --target-platform android-arm64,android-arm
         ```
-        
+
         ## Contents:
-        
+
         ### jniLibs/
         - `arm64-v8a/librustdesk.so` - Main Rust library (arm64)
         - `arm64-v8a/libc++_shared.so` - C++ runtime (arm64)
         - `armeabi-v7a/librustdesk.so` - Main Rust library (armv7)
         - `armeabi-v7a/libc++_shared.so` - C++ runtime (armv7)
-        
+
         ### bridge-files/
         - `generated_bridge.dart` - Dart FFI bindings
         - `bridge_generated.h` - C FFI headers
-        
+
         ## Build Info:
         - Version: ${{ env.VERSION }}
         - Rust: ${{ env.RUST_VERSION }}
@@ -297,43 +290,43 @@ jobs:
         - NDK: ${{ env.NDK_VERSION }}
         - Built: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
         - Commit: ${{ github.sha }}
-        
+
         ## File Sizes:
         - arm64 library: ~15-20 MB
         - armv7 library: ~15-20 MB
         - Total: ~40-50 MB
-        
+
         ## Notes:
         ⚠️ These libraries are specific to RustDesk version ${{ env.VERSION }}
         ⚠️ Must use same Rust/Flutter/NDK versions
         ✅ Saves 30-40 minutes on each rebuild
         ✅ Perfect for testing Flutter UI changes
         EOF
-        
+
         # Создаем install script
         cat > sharepack/install.sh << 'INSTALL_SCRIPT'
         #!/bin/bash
         set -e
-        
+
         SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-        
+
         if [ ! -d "flutter" ]; then
             echo "Error: Run this script from RustDesk root directory"
             echo "Usage: cd rustdesk && bash /path/to/sharepack/install.sh"
             exit 1
         fi
-        
+
         echo "Installing pre-compiled libraries..."
-        
+
         # Copy jniLibs
         mkdir -p flutter/android/app/src/main/jniLibs
         cp -r "$SCRIPT_DIR/jniLibs/"* flutter/android/app/src/main/jniLibs/
         echo "✓ Copied native libraries"
-        
+
         # Copy bridge files
         cp "$SCRIPT_DIR/bridge-files/generated_bridge.dart" flutter/lib/
         echo "✓ Copied bridge files"
-        
+
         echo ""
         echo "Installation complete!"
         echo ""
@@ -342,14 +335,14 @@ jobs:
         echo "  flutter pub get"
         echo "  flutter build apk --release --target-platform android-arm64,android-arm"
         INSTALL_SCRIPT
-        
+
         chmod +x sharepack/install.sh
-        
+
         # Создаем архив
         cd sharepack
         zip -r ../rustdesk-${{ env.VERSION }}-sharepack.zip .
         cd ..
-        
+
         # Информация
         echo "Sharepack created:"
         ls -lh rustdesk-${{ env.VERSION }}-sharepack.zip
