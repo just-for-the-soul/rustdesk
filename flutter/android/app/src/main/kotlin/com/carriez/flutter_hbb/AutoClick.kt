@@ -40,21 +40,35 @@ object AutoClick {
         "record or cast",
     )
 
-    private val entireLabels    = listOf("Entire screen", "Весь экран", "Full screen")
-    private val singleAppLabels = listOf("A single app", "Одно приложение", "Single app")
+    private val entireLabels    = listOf(
+        "Entire screen",                            // Android 12-15 EN
+        "Share entire screen",                      // Android 16 EN
+        "Весь экран",                               // RU
+        "Full screen",
+    )
+    private val singleAppLabels = listOf(
+        "A single app",                             // Android 12-15 EN
+        "Share one app",                            // Android 16 EN
+        "Одно приложение",                          // RU
+        "Single app",
+    )
     // "Start now" — Android 11 и ниже. "Start" — Android 12+
     private val startLabels     = listOf("Start now", "Start", "Начать", "Старт")
     private val confirmLabels   = listOf("Start now", "Start recording", "Начать запись")
 
-    // Пакеты которые показывают MP диалог — только системные
     // Якорный текст — присутствует в MP диалоге на ВСЕХ версиях Android.
     // Надёжнее фильтра по package — не зависит от OEM и версии системы.
     private val MP_ANCHOR_TEXTS = listOf(
-        "Start recording or casting with",          // EN Android 12+
+        "Start recording or casting with",          // EN Android 12-15
         "recording or casting",                     // EN короткий
         "запись или трансляцию с",                  // RU
-        "will have access to all of the information", // EN Android 11 (из тела диалога)
+        "will have access to all of the information", // EN Android 11
         "RustDesk will have access",                // EN Android 11 короткий
+        // Android 16 — описание меняется в зависимости от выбранного варианта.
+        // Оба описания заканчиваются одинаковой фразой — используем её как якорь.
+        "be careful with things like passwords",    // EN Android 16 (общий хвост обоих текстов)
+        "sharing an app, anything shown",           // EN Android 16 — выбрано "Share one app"
+        "sharing your entire screen, anything",     // EN Android 16 — выбрано "Share entire screen"
     )
 
     // -----------------------------------------------------------------------
