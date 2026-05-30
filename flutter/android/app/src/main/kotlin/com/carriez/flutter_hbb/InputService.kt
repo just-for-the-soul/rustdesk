@@ -370,28 +370,41 @@ class InputService : AccessibilityService() {
             return
         }
 
-        if (leftIsDown) continueGesture(mouseX, mouseY)
-
+        // LEFT_UP обрабатываем ДО универсального continueGesture.
+        //
+        // Проблема старого порядка:
+        //   1. if (leftIsDown) continueGesture()  → диспатчит TOUCH_DOWN (willContinue=true)
+        //   2. tryNodeClickAt() → ACTION_CLICK    → второй клик (двойное нажатие)
+        //   3. stroke=null; return                → TOUCH_DOWN висит без TOUCH_UP (залипание)
+        //
+        // Новый порядок: сначала определяем что делаем, потом действуем.
+        //   • stroke==null (нет движения, жест ещё не начат) + тап → чистый ACTION_CLICK
+        //   • stroke!=null (было движение) или ACTION_CLICK не прошёл → штатный жест
         if (mask == LEFT_UP) {
             if (leftIsDown) {
                 leftIsDown = false
                 isWaitingLongPress = false
-                // Определяем тап vs свайп: короткое время + маленькая дельта
                 val tapDuration = System.currentTimeMillis() - lastTouchGestureStartTime
                 val delta = abs(mouseX - lastX) + abs(mouseY - lastY)
                 val isTap = tapDuration < 300L && delta < 20
-                if (isTap && tryNodeClickAt(mouseX, mouseY)) {
-                    // Samsung One UI блокирует raw gesture injection в защищённых окнах
-                    // (Google Play login, Samsung Pay и т.д.), но ACTION_CLICK проходит.
-                    // Если нода нашлась и клик прошёл — gesture не нужен.
+                // stroke==null: между DOWN и UP не было LEFT_MOVE — жест не диспатчился.
+                // Только в этом случае безопасно использовать ACTION_CLICK без жеста.
+                // Если stroke!=null — жест уже начат, закрываем его штатно через endGesture.
+                if (isTap && stroke == null && tryNodeClickAt(mouseX, mouseY)) {
+                    // Чистый ACTION_CLICK, без каких-либо gesture-событий.
+                    // Samsung protected windows (Play Store login, Google Account и т.д.)
                     touchPath.reset()
-                    stroke = null
                     return
                 }
+                // Штатный путь: continueGesture (TOUCH_DOWN) + endGesture (TOUCH_UP)
+                continueGesture(mouseX, mouseY)
                 endGesture(mouseX, mouseY)
                 return
             }
         }
+
+        // LEFT_MOVE и прочие маски — продолжаем жест если кнопка зажата
+        if (leftIsDown) continueGesture(mouseX, mouseY)
 
         if (mask == RIGHT_UP) { longPress(mouseX, mouseY); return }
         if (mask == BACK_UP) { performGlobalAction(GLOBAL_ACTION_BACK); return }
