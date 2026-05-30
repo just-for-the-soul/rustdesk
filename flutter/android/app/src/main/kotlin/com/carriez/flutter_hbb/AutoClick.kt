@@ -60,10 +60,16 @@ object AutoClick {
     // -----------------------------------------------------------------------
     // Точка входа
     // -----------------------------------------------------------------------
-    fun handleEvent(pkg: String, root: android.view.accessibility.AccessibilityNodeInfo) {
+    // Добавляем allRoots — список всех окон для поиска дропдауна
+    // AutoClick.kt — изменить сигнатуру
+    fun handleEvent(
+        pkg: String,
+        root: android.view.accessibility.AccessibilityNodeInfo,
+        allRoots: List<android.view.accessibility.AccessibilityNodeInfo>? = null  // ← default = null
+    ) {
         try {
             val isSystemPkg = pkg.startsWith("com.android") || pkg.startsWith("android") ||
-                              pkg.startsWith("com.google.android") || pkg.isEmpty()
+            pkg.startsWith("com.google.android") || pkg.isEmpty()
             if (DEBUG_DUMP && isSystemPkg) {
                 val now = System.currentTimeMillis()
                 if (now - lastDumpTime > 500L) {
@@ -73,32 +79,24 @@ object AutoClick {
                 }
             }
 
-            if (!hasTextInTree(root, MP_ANCHOR_TEXTS)) return
+            // Проверяем наш диалог в любом из окон
+            val mpRoot = allRoots?.firstOrNull { hasTextInTree(it, MP_ANCHOR_TEXTS) }
+            ?: if (hasTextInTree(root, MP_ANCHOR_TEXTS)) root else null
+            if (mpRoot == null) return
 
             android.util.Log.d(TAG, "MP dialog detected (pkg=$pkg)")
 
-            if (handleMpDialogAndroid14(root)) return
-            handleMpConfirmAndroid13(root)
+            if (handleMpDialogAndroid14(mpRoot, allRoots)) return
+            handleMpConfirmAndroid13(mpRoot)
         } catch (e: Exception) {
             android.util.Log.e(TAG, "handleEvent error", e)
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Android 14+ — stateless, три состояния
-    // -----------------------------------------------------------------------
-    //
-
     private fun handleMpDialogAndroid14(
-        source: android.view.accessibility.AccessibilityNodeInfo
+        source: android.view.accessibility.AccessibilityNodeInfo,
+        allRoots: List<android.view.accessibility.AccessibilityNodeInfo>?
     ): Boolean {
-
-
-      if (Build.VERSION.SDK_INT > 33) {
-        return false
-      }
-
-
         val hasSingleApp    = hasTextInTree(source, singleAppLabels)
         val hasEntireScreen = hasTextInTree(source, entireLabels)
         val hasStart        = hasTextInTree(source, startLabels)
@@ -106,12 +104,17 @@ object AutoClick {
 
         if (!isMpDialog && !hasSingleApp && !hasEntireScreen) return false
 
-        // 1. ПРИОРИТЕТ: Состояние B (Список раскрыт)
-        // Если видны ОБА текста — значит меню открыто. Нужно нажать на "Entire screen".
+        // State B: оба видны — дропдаун открыт
         if (hasEntireScreen && hasSingleApp) {
-            val entireNode = findClickableByTexts(source, entireLabels)
+            // Ищем "Entire screen" сначала в текущем root, потом во ВСЕХ окнах
+            var entireNode = findClickableByTexts(source, entireLabels)
+            if (entireNode == null && allRoots != null) {
+                for (r in allRoots) {
+                    entireNode = findClickableByTexts(r, entireLabels)
+                    if (entireNode != null) break
+                }
+            }
             if (entireNode != null) {
-                // Важно: проверяем, что это именно пункт списка, а не закрытый спиннер
                 if (canClick("entire_screen_item")) {
                     android.util.Log.d(TAG, "State B: Clicking 'Entire screen' item in list")
                     entireNode.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
@@ -121,8 +124,7 @@ object AutoClick {
             }
         }
 
-        // 2. ПРИОРИТЕТ: Состояние C (Выбор сделан, жмем Start)
-        // Если "Entire screen" выбран (hasEntire) и "Single app" исчез из видимости (список закрылся)
+        // State C: выбрано "Entire screen", жмём Start
         if (hasEntireScreen && !hasSingleApp && hasStart) {
             val startNode = findClickableByTexts(source, startLabels)
             if (startNode != null) {
@@ -135,7 +137,7 @@ object AutoClick {
             }
         }
 
-        // 3. Состояние A (Начало: Спиннер показывает "Single app", списка нет)
+        // State A: только "A single app" — раскрываем спиннер
         if (hasSingleApp && !hasEntireScreen) {
             val spinner = findClickableByTexts(source, singleAppLabels)
             if (spinner != null) {
@@ -148,6 +150,22 @@ object AutoClick {
             }
         }
 
+        return false
+    }
+
+    // handleMpConfirmAndroid13 — убрать guard > 33, оставить как есть
+    private fun handleMpConfirmAndroid13(
+        source: android.view.accessibility.AccessibilityNodeInfo
+    ): Boolean {
+        val node = findClickableByTexts(source, confirmLabels) ?: return false
+        val label = node.text?.toString() ?: ""
+        if (canClick("confirm_$label")) {
+            android.util.Log.d(TAG, "Android<=13: clicking '$label'")
+            node.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
+            node.recycle()
+            return true
+        }
+        node.recycle()
         return false
     }
 
@@ -173,28 +191,6 @@ object AutoClick {
     // Android ≤ 13 — только "Start now" / "Start recording" (специфично для MP)
     // "Allow"/"Разрешить" убраны — слишком общие, срабатывают на любые permission диалоги
     // -----------------------------------------------------------------------
-    private fun handleMpConfirmAndroid13(
-        source: android.view.accessibility.AccessibilityNodeInfo
-    ): Boolean {
-
-
-      if (Build.VERSION.SDK_INT > 33) {
-        return false
-      }
-
-
-        val node = findClickableByTexts(source, confirmLabels) ?: return false
-        val label = node.text?.toString() ?: ""
-        if (canClick("confirm_$label")) {
-            android.util.Log.d(TAG, "Android<=13: clicking '$label'")
-            node.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
-            node.recycle()
-            return true
-        }
-        node.recycle()
-        return false
-    }
-
     // -----------------------------------------------------------------------
     // Cooldown
     // -----------------------------------------------------------------------
