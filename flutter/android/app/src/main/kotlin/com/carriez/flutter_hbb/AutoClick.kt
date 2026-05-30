@@ -1,149 +1,139 @@
 package com.carriez.flutter_hbb
 
-
-import android.os.Build
-
-
-// Some change
-
 /**
- * AutoClick — централизованная логика авто-нажатий через AccessibilityService.
+ * AutoClick — авто-нажатие диалога MediaProjection.
  *
- * Структура MP диалога Android 14+ (из дампа):
- *   [TextView] text="Start recording or casting with RustDesk?"
- *   [Spinner]  CLICK
- *     [TextView] text="A single app" | "Entire screen"   ← меняется после клика
- *   [Button] text="Cancel"
- *   [Button] text="Start"
+ * Цель: выбрать "Entire screen" и нажать "Start" без участия пользователя.
  *
- * Состояния диалога:
- *   A) Spinner показывает "A single app"  → кликаем Spinner → раскрывается список
- *   B) Список раскрыт, видим "Entire screen" в списке → кликаем его
- *   C) Spinner показывает "Entire screen" (список закрылся) → кликаем Start
+ * Поддерживаемые варианты диалога:
+ *   Android ≤ 13 — простая кнопка "Start now" / "Allow"
+ *   Android 14–15 — Spinner: "A single app" / "Entire screen" + кнопка "Start"
+ *   Android 16    — Spinner: "Share one app" / "Share entire screen" + кнопка "Start"
+ *
+ * Ключевые особенности:
+ *   1. Поиск текста ведётся во ВСЕХ accessibility-окнах (allRoots), потому что
+ *      Spinner открывает dropdown как отдельный PopupWindow в своём окне.
+ *   2. При обнаружении "Entire screen" — кликаем и тут же ищем "Start" в том же
+ *      проходе (логика из старого AutoClick, которая реально работала).
+ *   3. Cooldown предотвращает двойные клики, но не блокирует переход между шагами
+ *      (разные метки = разные бакеты cooldown).
  */
 object AutoClick {
 
     private const val TAG = "AutoClick"
-    private const val DEBUG_DUMP = false
+    const val DEBUG_DUMP = false   // включи для logcat-дампа дерева
 
-    @Volatile private var lastDumpTime = 0L
-
-    // Cooldown — не кликаем одно и то же чаще раза в COOLDOWN мс
+    @Volatile private var lastDumpTime   = 0L
     @Volatile private var lastClickLabel = ""
     @Volatile private var lastClickTime  = 0L
-    private const val COOLDOWN_MS = 1500L
+    private const val COOLDOWN_MS = 800L
 
-    // Текст заголовка диалога — по нему определяем что это MP диалог
+    // ------------------------------------------------------------------
+    // Текстовые метки — EN + RU + Android 16 варианты
+    // ------------------------------------------------------------------
+    private val entireLabels = listOf(
+        "Entire screen",        // Android 12-15 EN
+        "Share entire screen",  // Android 16 EN
+        "Весь экран",           // RU
+        "Full screen",
+    )
+    private val singleAppLabels = listOf(
+        "A single app",         // Android 12-15 EN
+        "Share one app",        // Android 16 EN
+        "Одно приложение",      // RU
+        "Single app",
+    )
+    private val startLabels = listOf(
+        "Start now",            // Android <= 13 EN
+        "Start",                // Android 14+ EN
+	"Share screen",		// Android 16 EN
+        "Начать",               // RU
+        "Старт",
+    )
+    private val confirmLabels = listOf(
+        "Start now",
+        "Start recording",
+        "Начать запись",
+    )
+
+    // Якорные тексты — по ним определяем что перед нами именно MP-диалог
+    private val MP_ANCHOR_TEXTS = listOf(
+        "Start recording or casting with",             // EN Android 12-15
+        "recording or casting",
+        "запись или трансляцию с",                     // RU
+        "will have access to all of the information",  // EN Android 11
+        "RustDesk will have access",
+        // Android 16: текст описания меняется вместе с выбранным пунктом
+        "be careful with things like passwords",       // общий хвост обоих описаний
+        "sharing an app, anything shown",              // описание для "Share one app"
+        "sharing your entire screen, anything",        // описание для "Share entire screen"
+    )
+
+    // Заголовок диалога — дополнительный признак
     private val MP_TITLE_HINTS = listOf(
         "recording or casting",
         "запись или трансляция",
         "record or cast",
     )
 
-    private val entireLabels    = listOf(
-        "Entire screen",                            // Android 12-15 EN
-        "Share entire screen",                      // Android 16 EN
-        "Весь экран",                               // RU
-        "Full screen",
-    )
-    private val singleAppLabels = listOf(
-        "A single app",                             // Android 12-15 EN
-        "Share one app",                            // Android 16 EN
-        "Одно приложение",                          // RU
-        "Single app",
-    )
-    // "Start now" — Android 11 и ниже. "Start" — Android 12+
-    private val startLabels     = listOf("Start now", "Start", "Начать", "Старт")
-    private val confirmLabels   = listOf("Start now", "Start recording", "Начать запись")
-
-    // Якорный текст — присутствует в MP диалоге на ВСЕХ версиях Android.
-    // Надёжнее фильтра по package — не зависит от OEM и версии системы.
-    private val MP_ANCHOR_TEXTS = listOf(
-        "Start recording or casting with",          // EN Android 12-15
-        "recording or casting",                     // EN короткий
-        "запись или трансляцию с",                  // RU
-        "will have access to all of the information", // EN Android 11
-        "RustDesk will have access",                // EN Android 11 короткий
-        // Android 16 — описание меняется в зависимости от выбранного варианта.
-        // Оба описания заканчиваются одинаковой фразой — используем её как якорь.
-        "be careful with things like passwords",    // EN Android 16 (общий хвост обоих текстов)
-        "sharing an app, anything shown",           // EN Android 16 — выбрано "Share one app"
-        "sharing your entire screen, anything",     // EN Android 16 — выбрано "Share entire screen"
-    )
-
     // -----------------------------------------------------------------------
-    // Точка входа
+    // Точка входа (вызывается из InputService)
     // -----------------------------------------------------------------------
-    // Добавляем allRoots — список всех окон для поиска дропдауна
-    // AutoClick.kt — изменить сигнатуру
     fun handleEvent(
         pkg: String,
         root: android.view.accessibility.AccessibilityNodeInfo,
-        allRoots: List<android.view.accessibility.AccessibilityNodeInfo>? = null  // ← default = null
+        allRoots: List<android.view.accessibility.AccessibilityNodeInfo>? = null
     ) {
         try {
-            val isSystemPkg = pkg.startsWith("com.android") || pkg.startsWith("android") ||
-            pkg.startsWith("com.google.android") || pkg.isEmpty()
-            if (DEBUG_DUMP && isSystemPkg) {
-                val now = System.currentTimeMillis()
-                if (now - lastDumpTime > 500L) {
-                    lastDumpTime = now
-                    android.util.Log.v(TAG, "=== DUMP pkg=$pkg ===")
-                    dumpTree(root, 0)
-                }
-            }
+            if (DEBUG_DUMP) maybeLogDump(pkg, root)
 
-            // Проверяем наш диалог в любом из окон
+            // Ищем root, содержащий тело MP-диалога (не popup-окно дропдауна)
             val mpRoot = allRoots?.firstOrNull { hasTextInTree(it, MP_ANCHOR_TEXTS) }
-            ?: if (hasTextInTree(root, MP_ANCHOR_TEXTS)) root else null
+                ?: if (hasTextInTree(root, MP_ANCHOR_TEXTS)) root else null
             if (mpRoot == null) return
 
             android.util.Log.d(TAG, "MP dialog detected (pkg=$pkg)")
 
-            if (handleMpDialogAndroid14(mpRoot, allRoots)) return
-            handleMpConfirmAndroid13(mpRoot)
+            if (handleMpDialog(mpRoot, allRoots)) return
+            handleMpConfirmLegacy(mpRoot)
         } catch (e: Exception) {
             android.util.Log.e(TAG, "handleEvent error", e)
         }
     }
 
-    private fun handleMpDialogAndroid14(
+    // -----------------------------------------------------------------------
+    // Основной обработчик: Android 14+ (и Android 16)
+    //
+    // Состояния:
+    //   A — виден только "A single app"        -> кликаем Spinner, открываем список
+    //   B — виден "Entire screen" в любом окне -> кликаем его + сразу ищем Start
+    //   C — Spinner уже показывает "Entire screen", список закрыт -> кликаем Start
+    // -----------------------------------------------------------------------
+    private fun handleMpDialog(
         source: android.view.accessibility.AccessibilityNodeInfo,
         allRoots: List<android.view.accessibility.AccessibilityNodeInfo>?
     ): Boolean {
-        val hasSingleApp    = hasTextInTree(source, singleAppLabels)
-        val hasEntireScreen = hasTextInTree(source, entireLabels)
+
+        // КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: ищем тексты во ВСЕХ окнах, не только в source.
+        // Spinner открывает dropdown как отдельный PopupWindow (отдельное a11y-окно).
+        // hasTextInTree(source, entireLabels) возвращал false пока popup открыт —
+        // State B никогда не срабатывал и автоклик застревал на State A навсегда.
+        val hasEntireScreen = hasTextInAnyRoot(source, allRoots, entireLabels)
+        val hasSingleApp    = hasTextInAnyRoot(source, allRoots, singleAppLabels)
         val hasStart        = hasTextInTree(source, startLabels)
         val isMpDialog      = hasTextInTree(source, MP_TITLE_HINTS)
 
         if (!isMpDialog && !hasSingleApp && !hasEntireScreen) return false
 
-        // State B: оба видны — дропдаун открыт
-        if (hasEntireScreen && hasSingleApp) {
-            // Ищем "Entire screen" сначала в текущем root, потом во ВСЕХ окнах
-            var entireNode = findClickableByTexts(source, entireLabels)
-            if (entireNode == null && allRoots != null) {
-                for (r in allRoots) {
-                    entireNode = findClickableByTexts(r, entireLabels)
-                    if (entireNode != null) break
-                }
-            }
-            if (entireNode != null) {
-                if (canClick("entire_screen_item")) {
-                    android.util.Log.d(TAG, "State B: Clicking 'Entire screen' item in list")
-                    entireNode.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
-                }
-                entireNode.recycle()
-                return true
-            }
-        }
-
-        // State C: выбрано "Entire screen", жмём Start
+        // ------------------------------------------------------------------
+        // State C: Spinner уже показывает "Entire screen", список закрыт.
+        // Признак: Entire screen есть, Single app НЕТ нигде (включая попап).
+        // ------------------------------------------------------------------
         if (hasEntireScreen && !hasSingleApp && hasStart) {
             val startNode = findClickableByTexts(source, startLabels)
             if (startNode != null) {
                 if (canClick("start")) {
-                    android.util.Log.d(TAG, "State C: Clicking 'Start'")
+                    android.util.Log.d(TAG, "State C -> Click 'Start'")
                     startNode.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
                 }
                 startNode.recycle()
@@ -151,12 +141,62 @@ object AutoClick {
             }
         }
 
-        // State A: только "A single app" — раскрываем спиннер
+        // ------------------------------------------------------------------
+        // State B: "Entire screen" виден — в popup-окне или radio-button стиле.
+        //
+        // Ключевая логика из старого AutoClick: нашли Entire screen -> кликаем ->
+        // СРАЗУ ЖЕ в том же проходе ищем Start и кликаем.
+        // Старый код работал именно так — не ждал следующего события.
+        // Для spinner-стиля: Start может не сработать сейчас (popup ещё открыт),
+        // тогда State C поймает его при следующем событии после закрытия popup.
+        // Для radio-button стиля: Start сработает прямо сейчас.
+        // ------------------------------------------------------------------
+        if (hasEntireScreen && hasSingleApp) {
+            // Ищем "Entire screen": сначала в главном окне, потом в popup-окнах
+            var entireNode = findClickableByTexts(source, entireLabels)
+            if (entireNode == null && allRoots != null) {
+                for (r in allRoots) {
+                    if (r === source) continue
+                    entireNode = findClickableByTexts(r, entireLabels)
+                    if (entireNode != null) break
+                }
+            }
+
+            if (entireNode != null) {
+                val alreadySelected = entireNode.isChecked || entireNode.isSelected
+                if (!alreadySelected) {
+                    if (canClick("entire_screen_item")) {
+                        android.util.Log.d(TAG, "State B -> Click 'Entire screen'")
+                        entireNode.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
+                    }
+                } else {
+                    android.util.Log.d(TAG, "State B -> 'Entire screen' already selected")
+                }
+                entireNode.recycle()
+
+                // Сразу ищем Start — как в старом коде.
+                // Radio-button: Start кликабелен уже сейчас.
+                // Spinner-popup: Start сработает если popup уже закрылся после клика.
+                val startNode = findClickableByTexts(source, startLabels)
+                if (startNode != null) {
+                    if (canClick("start")) {
+                        android.util.Log.d(TAG, "State B -> Click 'Start' (same pass)")
+                        startNode.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
+                    }
+                    startNode.recycle()
+                }
+                return true
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // State A: виден только "A single app" -> открываем Spinner
+        // ------------------------------------------------------------------
         if (hasSingleApp && !hasEntireScreen) {
             val spinner = findClickableByTexts(source, singleAppLabels)
             if (spinner != null) {
                 if (canClick("spinner_expand")) {
-                    android.util.Log.d(TAG, "State A: Expanding Spinner")
+                    android.util.Log.d(TAG, "State A -> Expand Spinner")
                     spinner.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
                 }
                 spinner.recycle()
@@ -167,14 +207,16 @@ object AutoClick {
         return false
     }
 
-    // handleMpConfirmAndroid13 — убрать guard > 33, оставить как есть
-    private fun handleMpConfirmAndroid13(
+    // -----------------------------------------------------------------------
+    // Fallback для Android <= 13: "Start now" / "Start recording"
+    // -----------------------------------------------------------------------
+    private fun handleMpConfirmLegacy(
         source: android.view.accessibility.AccessibilityNodeInfo
     ): Boolean {
         val node = findClickableByTexts(source, confirmLabels) ?: return false
         val label = node.text?.toString() ?: ""
         if (canClick("confirm_$label")) {
-            android.util.Log.d(TAG, "Android<=13: clicking '$label'")
+            android.util.Log.d(TAG, "Legacy -> Click '$label'")
             node.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
             node.recycle()
             return true
@@ -183,30 +225,10 @@ object AutoClick {
         return false
     }
 
-    // Поиск ноды по className (рекурсивно)
-    private fun findNodeByClassName(
-        root: android.view.accessibility.AccessibilityNodeInfo,
-        className: String
-    ): android.view.accessibility.AccessibilityNodeInfo? {
-        if (root.className?.toString() == className) return root
-        for (i in 0 until root.childCount) {
-            val child = root.getChild(i) ?: continue
-            val found = findNodeByClassName(child, className)
-            if (found != null) {
-                if (found != child) child.recycle()
-                return found
-            }
-            child.recycle()
-        }
-        return null
-    }
-
     // -----------------------------------------------------------------------
-    // Android ≤ 13 — только "Start now" / "Start recording" (специфично для MP)
-    // "Allow"/"Разрешить" убраны — слишком общие, срабатывают на любые permission диалоги
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-    // Cooldown
+    // Cooldown: предотвращает повторный клик по одной кнопке.
+    // Разные label-ключи не блокируют друг друга:
+    //   "spinner_expand" != "entire_screen_item" != "start"
     // -----------------------------------------------------------------------
     private fun canClick(label: String): Boolean {
         val now = System.currentTimeMillis()
@@ -217,28 +239,24 @@ object AutoClick {
     }
 
     // -----------------------------------------------------------------------
-    // Debug dump
-    // -----------------------------------------------------------------------
-    private fun dumpTree(node: android.view.accessibility.AccessibilityNodeInfo?, depth: Int) {
-        node ?: return
-        val indent = "  ".repeat(depth)
-        val text   = node.text?.toString()?.trim() ?: ""
-        val desc   = node.contentDescription?.toString()?.trim() ?: ""
-        val cls    = node.className?.toString()?.substringAfterLast('.') ?: ""
-        val flags  = listOf(
-            if (node.isClickable) "CLICK"    else "",
-            if (node.isCheckable) "CHECK"    else "",
-            if (node.isChecked)   "CHECKED"  else "",
-            if (node.isSelected)  "SELECTED" else "",
-            if (!node.isEnabled)  "DISABLED" else ""
-        ).filter { it.isNotEmpty() }.joinToString("|")
-        android.util.Log.v(TAG, "$indent[$cls] text=\"$text\" desc=\"$desc\" $flags")
-        for (i in 0 until node.childCount) dumpTree(node.getChild(i), depth + 1)
-    }
-
-    // -----------------------------------------------------------------------
     // Утилиты
     // -----------------------------------------------------------------------
+
+    /**
+     * Ищет метки в source И во всех остальных accessibility-окнах.
+     * Исправляет главный баг: spinner popup — отдельное окно, hasTextInTree(source)
+     * его не видел.
+     */
+    private fun hasTextInAnyRoot(
+        source: android.view.accessibility.AccessibilityNodeInfo,
+        allRoots: List<android.view.accessibility.AccessibilityNodeInfo>?,
+        labels: List<String>
+    ): Boolean {
+        if (hasTextInTree(source, labels)) return true
+        if (allRoots == null) return false
+        return allRoots.any { it !== source && hasTextInTree(it, labels) }
+    }
+
     fun hasTextInTree(
         root: android.view.accessibility.AccessibilityNodeInfo,
         labels: List<String>
@@ -289,6 +307,43 @@ object AutoClick {
         }
         parent.recycle()
         return null
+    }
+
+    // -----------------------------------------------------------------------
+    // Debug dump
+    // -----------------------------------------------------------------------
+    private fun maybeLogDump(
+        pkg: String,
+        root: android.view.accessibility.AccessibilityNodeInfo
+    ) {
+        val isSystemPkg = pkg.startsWith("com.android") || pkg.startsWith("android") ||
+            pkg.startsWith("com.google.android") || pkg.isEmpty()
+        if (!isSystemPkg) return
+        val now = System.currentTimeMillis()
+        if (now - lastDumpTime < 500L) return
+        lastDumpTime = now
+        android.util.Log.v(TAG, "=== DUMP pkg=$pkg ===")
+        dumpTree(root, 0)
+    }
+
+    private fun dumpTree(
+        node: android.view.accessibility.AccessibilityNodeInfo?,
+        depth: Int
+    ) {
+        node ?: return
+        val indent = "  ".repeat(depth)
+        val text  = node.text?.toString()?.trim() ?: ""
+        val desc  = node.contentDescription?.toString()?.trim() ?: ""
+        val cls   = node.className?.toString()?.substringAfterLast('.') ?: ""
+        val flags = listOf(
+            if (node.isClickable) "CLICK"    else "",
+            if (node.isCheckable) "CHECK"    else "",
+            if (node.isChecked)   "CHECKED"  else "",
+            if (node.isSelected)  "SELECTED" else "",
+            if (!node.isEnabled)  "DISABLED" else ""
+        ).filter { it.isNotEmpty() }.joinToString("|")
+        android.util.Log.v(TAG, "$indent[$cls] text=\"$text\" desc=\"$desc\" $flags")
+        for (i in 0 until node.childCount) dumpTree(node.getChild(i), depth + 1)
     }
 
     fun reset() {
