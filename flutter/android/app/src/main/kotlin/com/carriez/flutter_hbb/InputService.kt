@@ -467,29 +467,42 @@ class InputService : AccessibilityService() {
     // Samsung его не блокирует (предназначено для TalkBack и подобных сервисов).
     // На Pixel/AOSP оба метода работают; на Samsung protected-окнах — только нода.
     // -----------------------------------------------------------------------
+
     private fun tryNodeClickAt(x: Int, y: Int): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return false
-        return try {
-            val wins = windows ?: return false
-            for (win in wins) {
-                val root = win.root ?: continue
-                try {
-                    val node = findClickableNodeAt(root, x, y) ?: continue
-                    val ok = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    node.recycle()
-                    if (ok) {
-                        Log.d(logTag, "NodeClick OK at $x,$y")
-                        return true
-                    }
-                } finally {
-                    root.recycle()
-                }
-            }
-            false
-        } catch (e: Exception) {
-            Log.e(logTag, "tryNodeClickAt error: $e")
-            false
-        }
+	    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return false
+	    return try {
+		    val wins = windows ?: return false
+		    for (win in wins) {
+			    val rect = Rect()
+			    win.getBoundsInScreen(rect)
+
+			    // Оптимизация: если клик мимо окна — даже не пытаемся искать в нём ноды
+			    if (!rect.contains(x, y)) continue
+
+			    // ФИКС: Если клик попал в виртуальную клавиатуру — прерываем ACTION_CLICK!
+			    // Клавиатурам нужны реальные жесты, иначе ломается их state machine (залипают клавиши).
+			    if (win.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
+				    return false
+			    }
+
+			    val root = win.root ?: continue
+			    try {
+				    val node = findClickableNodeAt(root, x, y) ?: continue
+				    val ok = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+				    node.recycle()
+				    if (ok) {
+					    Log.d(logTag, "NodeClick OK at $x,$y")
+					    return true
+				    }
+			    } finally {
+				    root.recycle()
+			    }
+		    }
+		    false
+	    } catch (e: Exception) {
+		    Log.e(logTag, "tryNodeClickAt error: $e")
+		    false
+	    }
     }
 
     /**
