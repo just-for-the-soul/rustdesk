@@ -197,6 +197,7 @@ class InputService : AccessibilityService() {
 
         // Keep-alive фоновый поток — предотвращает усыпление JVM (из EndlessService.java)
         startKeepAliveLoop()
+
     }
 
     override fun onDestroy() {
@@ -221,74 +222,63 @@ class InputService : AccessibilityService() {
     // AccessibilityEvent — делегируем в AutoClick
     // -----------------------------------------------------------------------
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
-
-      if (Build.VERSION.SDK_INT > 33) {
-        return
-      }
-
-
-
         val eventType = event.eventType
 
-        if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
-            eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+        val isAutoClickEvent =
+        eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+        eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED ||
+        eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED  // ← добавить
 
-            val pkg = event.packageName?.toString() ?: ""
+        if (!isAutoClickEvent) {
+            // Сброс кэша при смене окна — оставляем как было
+            return
+        }
 
-            // Фильтр — обрабатываем только наши пакеты
-            val targetPackages = listOf(
-              "com.android.systemui",
-              "com.android.settings",
-              "com.carriez.flutter_hbb"
-            )
+        val pkg = event.packageName?.toString() ?: ""
 
-            if (pkg.isNotEmpty() && !targetPackages.contains(pkg)) return
+        val targetPackages = listOf(
+            "com.android.systemui",
+            "com.android.settings",
+            "com.carriez.flutter_hbb",
+            ""  // пустой pkg — системные overlay-окна
+        )
+        if (pkg.isNotEmpty() && !targetPackages.contains(pkg)) return
 
-            // Сброс кэша при смене окна
-            if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-                invalidateFocusCache()
-            }
+        if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            invalidateFocusCache()
+        }
 
-            // Переносим в фон, используем rootInActiveWindow — надёжнее event.source
-            eventHandler.post {
-                var root: AccessibilityNodeInfo? = null
-                try {
-                    root = rootInActiveWindow
-                    if (root != null) {
-                        AutoClick.handleEvent(pkg, root)
-                    } else {
-                        // Fallback — перебираем все окна (Android 14+ с оверлеями)
-                        processAllWindows(pkg)
-                    }
-                } catch (e: Exception) {
-                    Log.e(logTag, "Error in background auto-click", e)
-                } finally {
-                    root?.recycle()
-                }
+        eventHandler.post {
+            try {
+                // Всегда перебираем ВСЕ окна — дропдаун живёт в отдельном окне
+                processAllWindowsForAutoClick(pkg)
+            } catch (e: Exception) {
+                Log.e(logTag, "Error in background auto-click", e)
             }
         }
     }
 
-    /**
-     * Перебираем все окна если rootInActiveWindow вернул null.
-     * Помогает когда диалог MP отображается в системном слое поверх основного окна.
-     * Требует flagRetrieveInteractiveWindows в accessibility_service_config.xml
-     */
-    private fun processAllWindows(pkg: String) {
+    // Новый метод вместо processAllWindows — передаём список всех рутов в AutoClick
+    private fun processAllWindowsForAutoClick(pkg: String) {
         try {
-            val wins = windows ?: return
-            for (window in wins) {
-                val root = window.root ?: continue
-                try {
-                    AutoClick.handleEvent(pkg, root)
-                } finally {
-                    root.recycle()
-                }
+            val wins = windows
+            if (wins.isNullOrEmpty()) {
+                // Fallback для старых версий
+                val root = rootInActiveWindow ?: return
+                try { AutoClick.handleEvent(pkg, root, null) } finally { root.recycle() }
+                return
+            }
+            val roots = wins.mapNotNull { it.root }
+            try {
+                if (roots.isNotEmpty()) AutoClick.handleEvent(pkg, roots[0], roots)
+            } finally {
+                roots.forEach { it.recycle() }
             }
         } catch (e: Exception) {
-            Log.e(logTag, "processAllWindows error", e)
+            Log.e(logTag, "processAllWindowsForAutoClick error", e)
         }
     }
+
 
     // -----------------------------------------------------------------------
     // Keep-alive loop (идея из EndlessService.java)
