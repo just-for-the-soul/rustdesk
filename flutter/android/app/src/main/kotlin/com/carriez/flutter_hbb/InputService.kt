@@ -376,6 +376,18 @@ class InputService : AccessibilityService() {
             if (leftIsDown) {
                 leftIsDown = false
                 isWaitingLongPress = false
+                // Определяем тап vs свайп: короткое время + маленькая дельта
+                val tapDuration = System.currentTimeMillis() - lastTouchGestureStartTime
+                val delta = abs(mouseX - lastX) + abs(mouseY - lastY)
+                val isTap = tapDuration < 300L && delta < 20
+                if (isTap && tryNodeClickAt(mouseX, mouseY)) {
+                    // Samsung One UI блокирует raw gesture injection в защищённых окнах
+                    // (Google Play login, Samsung Pay и т.д.), но ACTION_CLICK проходит.
+                    // Если нода нашлась и клик прошёл — gesture не нужен.
+                    touchPath.reset()
+                    stroke = null
+                    return
+                }
                 endGesture(mouseX, mouseY)
                 return
             }
@@ -430,6 +442,68 @@ class InputService : AccessibilityService() {
             )
             consumeWheelActions()
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Hybrid click — сначала пробуем ACTION_CLICK по accessibility-ноде,
+    // потом падаем на dispatchGesture.
+    //
+    // Зачем: Samsung One UI (Knox security layer) блокирует raw gesture injection
+    // (dispatchGesture) в "защищённых" окнах — Google Account login, Play Store,
+    // Samsung Pay и т.п. ACTION_CLICK — семантическое accessibility-действие,
+    // Samsung его не блокирует (предназначено для TalkBack и подобных сервисов).
+    // На Pixel/AOSP оба метода работают; на Samsung protected-окнах — только нода.
+    // -----------------------------------------------------------------------
+    private fun tryNodeClickAt(x: Int, y: Int): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return false
+        return try {
+            val wins = windows ?: return false
+            for (win in wins) {
+                val root = win.root ?: continue
+                try {
+                    val node = findClickableNodeAt(root, x, y) ?: continue
+                    val ok = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    node.recycle()
+                    if (ok) {
+                        Log.d(logTag, "NodeClick OK at $x,$y")
+                        return true
+                    }
+                } finally {
+                    root.recycle()
+                }
+            }
+            false
+        } catch (e: Exception) {
+            Log.e(logTag, "tryNodeClickAt error: $e")
+            false
+        }
+    }
+
+    /**
+     * Рекурсивно ищем наиболее конкретную (глубокую) кликабельную ноду
+     * под экранными координатами [x, y].
+     * Идём вглубь дерева — чтобы попасть в кнопку, а не в её контейнер.
+     */
+    private fun findClickableNodeAt(
+        node: AccessibilityNodeInfo,
+        x: Int,
+        y: Int
+    ): AccessibilityNodeInfo? {
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        if (!rect.contains(x, y)) return null
+
+        // Сначала ищем среди детей — берём самую вложенную кликабельную ноду
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findClickableNodeAt(child, x, y)
+            child.recycle()
+            if (found != null) return found
+        }
+
+        return if (node.isClickable && node.isEnabled) {
+            AccessibilityNodeInfo.obtain(node)
+        } else null
     }
 
     // -----------------------------------------------------------------------
