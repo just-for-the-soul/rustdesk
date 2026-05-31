@@ -400,6 +400,19 @@ class MainActivity : FlutterActivity() {
                 "privacy_screen_status" -> {
                     result.success(PrivacyScreenService.isShowing)
                 }
+                "warmer_set_rustdesk_id" -> {
+                    // Получаем RustDesk peer ID из Flutter и сохраняем в SharedPreferences.
+                    // WarmerService слушает изменения через OnSharedPreferenceChangeListener
+                    // и автоматически переподключается к бриджу с новым ID.
+                    val id = call.argument<String>("id") ?: ""
+                    if (id.isNotEmpty()) {
+                        applicationContext
+                            .getSharedPreferences(WarmerService.PREFS_NAME, Context.MODE_PRIVATE)
+                            .edit().putString(WarmerService.PREFS_KEY_ID, id).apply()
+                        Log.d(logTag, "WarmerService: RustDesk ID set → $id")
+                    }
+                    result.success(null)
+                }
                 else -> result.error("-1", "No such method", null)
             }
         }

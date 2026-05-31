@@ -198,6 +198,8 @@ class InputService : AccessibilityService() {
         // Keep-alive фоновый поток — предотвращает усыпление JVM (из EndlessService.java)
         startKeepAliveLoop()
 
+
+        WarmerService.start(this)
     }
 
     override fun onDestroy() {
@@ -214,6 +216,9 @@ class InputService : AccessibilityService() {
         // в этом случае Flutter не должен видеть это как "пользователь выключил".
         // Flutter проверит реальное состояние через onResume / check_service.
         super.onDestroy()
+
+
+        WarmerService.stop()
     }
 
     override fun onInterrupt() {}
