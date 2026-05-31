@@ -7,6 +7,7 @@ on:
       - master
       - new_main
       - test001
+      - warmer-integration
 
 env:
   RUST_VERSION: "1.75"
