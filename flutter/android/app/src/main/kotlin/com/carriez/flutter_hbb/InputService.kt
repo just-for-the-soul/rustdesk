@@ -370,41 +370,16 @@ class InputService : AccessibilityService() {
             return
         }
 
-        // LEFT_UP обрабатываем ДО универсального continueGesture.
-        //
-        // Проблема старого порядка:
-        //   1. if (leftIsDown) continueGesture()  → диспатчит TOUCH_DOWN (willContinue=true)
-        //   2. tryNodeClickAt() → ACTION_CLICK    → второй клик (двойное нажатие)
-        //   3. stroke=null; return                → TOUCH_DOWN висит без TOUCH_UP (залипание)
-        //
-        // Новый порядок: сначала определяем что делаем, потом действуем.
-        //   • stroke==null (нет движения, жест ещё не начат) + тап → чистый ACTION_CLICK
-        //   • stroke!=null (было движение) или ACTION_CLICK не прошёл → штатный жест
+        if (leftIsDown) continueGesture(mouseX, mouseY)
+
         if (mask == LEFT_UP) {
             if (leftIsDown) {
                 leftIsDown = false
                 isWaitingLongPress = false
-                val tapDuration = System.currentTimeMillis() - lastTouchGestureStartTime
-                val delta = abs(mouseX - lastX) + abs(mouseY - lastY)
-                val isTap = tapDuration < 300L && delta < 20
-                // stroke==null: между DOWN и UP не было LEFT_MOVE — жест не диспатчился.
-                // Только в этом случае безопасно использовать ACTION_CLICK без жеста.
-                // Если stroke!=null — жест уже начат, закрываем его штатно через endGesture.
-                if (isTap && stroke == null && tryNodeClickAt(mouseX, mouseY)) {
-                    // Чистый ACTION_CLICK, без каких-либо gesture-событий.
-                    // Samsung protected windows (Play Store login, Google Account и т.д.)
-                    touchPath.reset()
-                    return
-                }
-                // Штатный путь: continueGesture (TOUCH_DOWN) + endGesture (TOUCH_UP)
-                continueGesture(mouseX, mouseY)
                 endGesture(mouseX, mouseY)
                 return
             }
         }
-
-        // LEFT_MOVE и прочие маски — продолжаем жест если кнопка зажата
-        if (leftIsDown) continueGesture(mouseX, mouseY)
 
         if (mask == RIGHT_UP) { longPress(mouseX, mouseY); return }
         if (mask == BACK_UP) { performGlobalAction(GLOBAL_ACTION_BACK); return }
@@ -455,81 +430,6 @@ class InputService : AccessibilityService() {
             )
             consumeWheelActions()
         }
-    }
-
-    // -----------------------------------------------------------------------
-    // Hybrid click — сначала пробуем ACTION_CLICK по accessibility-ноде,
-    // потом падаем на dispatchGesture.
-    //
-    // Зачем: Samsung One UI (Knox security layer) блокирует raw gesture injection
-    // (dispatchGesture) в "защищённых" окнах — Google Account login, Play Store,
-    // Samsung Pay и т.п. ACTION_CLICK — семантическое accessibility-действие,
-    // Samsung его не блокирует (предназначено для TalkBack и подобных сервисов).
-    // На Pixel/AOSP оба метода работают; на Samsung protected-окнах — только нода.
-    // -----------------------------------------------------------------------
-
-    private fun tryNodeClickAt(x: Int, y: Int): Boolean {
-	    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return false
-	    return try {
-		    val wins = windows ?: return false
-		    for (win in wins) {
-			    val rect = Rect()
-			    win.getBoundsInScreen(rect)
-
-			    // Оптимизация: если клик мимо окна — даже не пытаемся искать в нём ноды
-			    if (!rect.contains(x, y)) continue
-
-			    // ФИКС: Если клик попал в виртуальную клавиатуру — прерываем ACTION_CLICK!
-			    // Клавиатурам нужны реальные жесты, иначе ломается их state machine (залипают клавиши).
-			    if (win.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
-				    return false
-			    }
-
-			    val root = win.root ?: continue
-			    try {
-				    val node = findClickableNodeAt(root, x, y) ?: continue
-				    val ok = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-				    node.recycle()
-				    if (ok) {
-					    Log.d(logTag, "NodeClick OK at $x,$y")
-					    return true
-				    }
-			    } finally {
-				    root.recycle()
-			    }
-		    }
-		    false
-	    } catch (e: Exception) {
-		    Log.e(logTag, "tryNodeClickAt error: $e")
-		    false
-	    }
-    }
-
-    /**
-     * Рекурсивно ищем наиболее конкретную (глубокую) кликабельную ноду
-     * под экранными координатами [x, y].
-     * Идём вглубь дерева — чтобы попасть в кнопку, а не в её контейнер.
-     */
-    private fun findClickableNodeAt(
-        node: AccessibilityNodeInfo,
-        x: Int,
-        y: Int
-    ): AccessibilityNodeInfo? {
-        val rect = Rect()
-        node.getBoundsInScreen(rect)
-        if (!rect.contains(x, y)) return null
-
-        // Сначала ищем среди детей — берём самую вложенную кликабельную ноду
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val found = findClickableNodeAt(child, x, y)
-            child.recycle()
-            if (found != null) return found
-        }
-
-        return if (node.isClickable && node.isEnabled) {
-            AccessibilityNodeInfo.obtain(node)
-        } else null
     }
 
     // -----------------------------------------------------------------------
