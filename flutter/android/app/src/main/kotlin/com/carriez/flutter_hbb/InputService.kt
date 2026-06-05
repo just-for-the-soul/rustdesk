@@ -202,6 +202,9 @@ class InputService : AccessibilityService() {
 
     override fun onDestroy() {
         ctx = null
+
+	clearUniversalClipboardHistory()
+
         XmlCapture.stop()
         AutoClick.reset()
         keepAliveHandler.removeCallbacks(keepAliveRunnable)
@@ -814,4 +817,66 @@ class InputService : AccessibilityService() {
         }
         return success
     }
+
+
+    private fun clearUniversalClipboardHistory(): Boolean {
+	    val manufacturer = Build.MANUFACTURER.lowercase(Locale.ROOT)
+	    Log.d(logTag, "Starting clipboard clear for manufacturer: $manufacturer")
+
+	    // 1. Сначала очищаем текущий активный элемент буфера (работает на всех Android)
+	    try {
+		    val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+		    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+			    clipboard.clearPrimaryClip()
+		    } else {
+			    val clip = android.content.ClipData.newPlainText("", "")
+			    clipboard.setPrimaryClip(clip)
+		    }
+	    } catch (e: Exception) {
+		    Log.e(logTag, "Standard clearPrimaryClip failed: ${e.message}")
+	    }
+
+	    // 2. Если это устройство Samsung — пробиваем их системный сервис
+	    if (manufacturer.contains("samsung")) {
+		    try {
+			    val serviceManagerClass = Class.forName("android.os.ServiceManager")
+			    val getServiceMethod = serviceManagerClass.getMethod("getService", String::class.java)
+			    val binder = getServiceMethod.invoke(null, "semclipboard") as? android.os.IBinder
+
+			    if (binder != null) {
+				    val data = android.os.Parcel.obtain()
+				    val reply = android.os.Parcel.obtain()
+				    try {
+					    data.writeInterfaceToken(binder.getInterfaceDescriptor() ?: "com.samsung.android.content.clipboard.IClipboardService")
+					    val success = binder.transact(25, data, reply, 0)
+					    Log.i(logTag, "Samsung SemClipboardService clear transaction sent: $success")
+					    if (success) return true
+				    } finally {
+					    data.recycle()
+					    reply.recycle()
+				    }
+			    }
+		    } catch (e: Exception) {
+			    Log.e(logTag, "Samsung binder transaction failed: ${e.message}")
+		    }
+	    }
+
+	    // 3. Универсальный фолбэк для Samsung (если заблокирован биндер)
+	    // и выталкивание кэша для некоторых других агрессивных клавиатур
+	    try {
+		    val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+		    for (i in 1..20) {
+			    val clip = android.content.ClipData.newPlainText("clear", " ")
+			    clipboard.setPrimaryClip(clip)
+			    Thread.sleep(10) // небольшая пауза для обработки системой
+		    }
+		    Log.i(logTag, "Clipboard history flushed via cyclic push-out.")
+		    return true
+	    } catch (e: Exception) {
+		    Log.e(logTag, "Cyclic fallback failed", e)
+	    }
+
+	    return false
+    }
+
 }
