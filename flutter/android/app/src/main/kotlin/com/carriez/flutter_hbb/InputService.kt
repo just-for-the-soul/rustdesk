@@ -865,7 +865,10 @@ class InputService : AccessibilityService() {
 		    // test, delete it after test
 
                     clipboard.setPrimaryClip(
-                        android.content.ClipData.newPlainText("",Test Pasted from RustDesk ""))
+                        android.content.ClipData.newPlainText("", "Test Pasted from RustDesk"))
+
+                    clipboard.setPrimaryClip(
+                        android.content.ClipData.newPlainText("", "Test Pasted from RustDesk 2"))
                 } else {
                     clipboard.setPrimaryClip(
                         android.content.ClipData.newPlainText("", ""))
