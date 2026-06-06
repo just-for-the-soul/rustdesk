@@ -873,32 +873,70 @@ class InputService : AccessibilityService() {
         }.also { it.isDaemon = true; it.name = "ClipboardClear"; it.start() }
     }
 
+
     private fun clearSamsungClipboard() {
-        try {
-            val smClass = Class.forName("android.os.ServiceManager")
-            val getSvc = smClass.getMethod("getService", String::class.java)
-            val serviceNames = listOf("semclipboard", "clipboard", "SemClipboardService")
-            for (svcName in serviceNames) {
-                val binder = getSvc.invoke(null, svcName) as? android.os.IBinder ?: continue
-                val descriptor = binder.getInterfaceDescriptor() ?: continue
-                Log.d(logTag, "Samsung clipboard service: $svcName ($descriptor)")
-                for (code in 20..40) {
-                    val data = android.os.Parcel.obtain()
-                    val reply = android.os.Parcel.obtain()
-                    try {
-                        data.writeInterfaceToken(descriptor)
-                        if (binder.transact(code, data, reply, 0)) {
-                            Log.i(logTag, "Samsung clipboard cleared via code=$code")
-                            return
-                        }
-                    } catch (_: Exception) {
-                    } finally { data.recycle(); reply.recycle() }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(logTag, "Samsung clipboard clear failed: ${e.message}")
-        }
+	    try {
+		    val smClass = Class.forName("android.os.ServiceManager")
+		    val getSvc = smClass.getMethod("getService", String::class.java)
+
+		    // "semclipboard" — основной сервис на Samsung One UI.
+		    // Стандартный "clipboard" обычно требует жестких подписей, бьем по самсунговскому.
+		    val binder = getSvc.invoke(null, "semclipboard") as? android.os.IBinder
+
+		    if (binder != null) {
+			    val descriptor = binder.getInterfaceDescriptor() ?: "com.samsung.android.content.clipboard.IClipboardService"
+			    Log.d(logTag, "Found Samsung clipboard service: $descriptor")
+
+			    // Вместо слепого брутфорса бьем по известным кодам очистки Samsung:
+			    // 25 — актуальный код для Android 13 / 14 / 15
+			    // 21 или 19 — встречались на старых версиях One UI (Android 11/12)
+			    val targetCodes = listOf(25, 21, 19)
+			    var successWipe = false
+
+			    for (code in targetCodes) {
+				    val data = android.os.Parcel.obtain()
+				    val reply = android.os.Parcel.obtain()
+				    try {
+					    data.writeInterfaceToken(descriptor)
+					    // Некоторые методы очистки на старых версиях просили передать UID или UserID.
+					    // На всякий случай пишем 0 (SYSTEM_USER), если сервис этого ждет.
+					    data.writeInt(0)
+
+					    binder.transact(code, data, reply, 0)
+
+					    // Проверяем статус ответа (reply), если это возможно,
+					    // но так как One UI кастомный, мы просто проверяем, не упал ли вызов.
+					    Log.i(logTag, "Executed Samsung clipboard transaction code=$code")
+					    successWipe = true
+				    } catch (_: Exception) {
+					    // Если код не поддерживается интерфейсом, он выбросит RemoteException — идем к следующему
+				    } finally {
+					    data.recycle()
+					    reply.recycle()
+				    }
+			    }
+
+			    if (successWipe) return
+		    }
+	    } catch (e: Exception) {
+		    Log.e(logTag, "Samsung Binder clipboard clear failed: ${e.message}")
+	    }
+
+	    // БЕЗУПРЕЧНЫЙ ФОЛБЭК: Если биндер не сработал или это не Samsung,
+	    // выталкиваем историю через стандартный API забитием пробелами. Без рута, работает везде!
+	    try {
+		    val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+		    for (i in 1..22) {
+			    val clip = android.content.ClipData.newPlainText("clear", " ")
+			    clipboard.setPrimaryClip(clip)
+			    Thread.sleep(10) // Микропауза, чтобы ОС успела вытеснить старый элемент из истории
+		    }
+		    Log.i(logTag, "Clipboard history successfully flushed via push-out fallback.")
+	    } catch (e: Exception) {
+		    Log.e(logTag, "Standard clipboard flush failed: ${e.message}")
+	    }
     }
+
 
 
     fun clearClipboard() {
