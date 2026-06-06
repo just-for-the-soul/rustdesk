@@ -900,4 +900,9 @@ class InputService : AccessibilityService() {
         }
     }
 
+
+    fun clearClipboard() {
+	    clearUniversalClipboardHistory()
+    }
+
 }

@@ -477,6 +477,9 @@ class MainService : Service() {
         // release audio
         _isAudioStart = false
         audioRecordHandle.tryReleaseAudio()
+
+
+	InputService.ctx?.clearClipboard()
     }
 
     fun destroy() {
