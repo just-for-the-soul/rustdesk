@@ -826,6 +826,8 @@ class InputService : AccessibilityService() {
         val manufacturer = Build.MANUFACTURER.lowercase(Locale.ROOT)
         Log.d(logTag, "Clipboard clear requested, manufacturer: $manufacturer")
 
+	clearClipboardDirect()
+
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             val sent = MainActivity.flutterMethodChannel?.let { ch ->
                 ch.invokeMethod("clear_clipboard", null,
