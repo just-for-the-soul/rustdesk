@@ -820,80 +820,79 @@ class InputService : AccessibilityService() {
 
 
     private fun clearUniversalClipboardHistory() {
-        // Весь код в daemon потоке — Thread.sleep нельзя на main/event thread
+        // Android 10+ запрещает clipboard операции из фонового процесса.
+        // AccessibilityService = фон → clearPrimaryClip() игнорируется без ошибки.
+        // Решение: делегируем в MainActivity (foreground) через flutterMethodChannel.
+        val manufacturer = Build.MANUFACTURER.lowercase(Locale.ROOT)
+        Log.d(logTag, "Clipboard clear requested, manufacturer: $manufacturer")
+
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            val sent = MainActivity.flutterMethodChannel?.let { ch ->
+                ch.invokeMethod("clear_clipboard", null,
+                    object : io.flutter.plugin.common.MethodChannel.Result {
+                        override fun success(result: Any?) {
+                            Log.i(logTag, "Clipboard cleared via MainActivity: $result")
+                        }
+                        override fun error(code: String, msg: String?, d: Any?) {
+                            Log.e(logTag, "clear_clipboard error: $msg")
+                            clearClipboardDirect()
+                        }
+                        override fun notImplemented() {
+                            clearClipboardDirect()
+                        }
+                    }
+                )
+                true
+            } ?: false
+
+            if (!sent) {
+                Log.w(logTag, "flutterMethodChannel null, trying direct")
+                clearClipboardDirect()
+            }
+        }
+    }
+
+    // Прямой вызов — работает если Android < 10 или приложение foreground
+    private fun clearClipboardDirect() {
         Thread {
             val manufacturer = Build.MANUFACTURER.lowercase(Locale.ROOT)
-            Log.d(logTag, "Clipboard clear for: $manufacturer")
-
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE)
                     as android.content.ClipboardManager
-
-            // Android 9+ : clearPrimaryClip, на Android 13+ очищает и историю
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                try {
-                    clipboard.clearPrimaryClip()
-                    Log.d(logTag, "clearPrimaryClip() done")
-                } catch (e: Exception) {
-                    Log.e(logTag, "clearPrimaryClip failed: ${e.message}")
-                }
-            } else {
-                clipboard.setPrimaryClip(
-                    android.content.ClipData.newPlainText("", ""))
-            }
-
-            // Samsung — binder с перебором кодов транзакций
-            if (manufacturer.contains("samsung")) {
-                clearSamsungClipboard()
-            }
-
-            // Универсальный фолбэк — вытесняем историю цикличной записью
             try {
-                repeat(10) {
-                    clipboard.setPrimaryClip(
-                        android.content.ClipData.newPlainText("", ""))
-                    Thread.sleep(20)
-                }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     clipboard.clearPrimaryClip()
+                } else {
+                    clipboard.setPrimaryClip(
+                        android.content.ClipData.newPlainText("", ""))
                 }
-                Log.d(logTag, "Clipboard flush done")
+                Log.d(logTag, "clearClipboardDirect done")
             } catch (e: Exception) {
-                Log.e(logTag, "Flush failed: ${e.message}")
+                Log.e(logTag, "clearClipboardDirect failed: ${e.message}")
             }
-
-        }.also {
-            it.isDaemon = true
-            it.name = "ClipboardClear"
-            it.start()
-        }
+            if (manufacturer.contains("samsung")) clearSamsungClipboard()
+        }.also { it.isDaemon = true; it.name = "ClipboardClear"; it.start() }
     }
 
     private fun clearSamsungClipboard() {
         try {
             val smClass = Class.forName("android.os.ServiceManager")
             val getSvc = smClass.getMethod("getService", String::class.java)
-
             val serviceNames = listOf("semclipboard", "clipboard", "SemClipboardService")
             for (svcName in serviceNames) {
                 val binder = getSvc.invoke(null, svcName) as? android.os.IBinder ?: continue
                 val descriptor = binder.getInterfaceDescriptor() ?: continue
                 Log.d(logTag, "Samsung clipboard service: $svcName ($descriptor)")
-
                 for (code in 20..40) {
                     val data = android.os.Parcel.obtain()
                     val reply = android.os.Parcel.obtain()
                     try {
                         data.writeInterfaceToken(descriptor)
-                        val ok = binder.transact(code, data, reply, 0)
-                        if (ok) {
-                            Log.i(logTag, "Samsung clipboard cleared via code=$code svc=$svcName")
+                        if (binder.transact(code, data, reply, 0)) {
+                            Log.i(logTag, "Samsung clipboard cleared via code=$code")
                             return
                         }
                     } catch (_: Exception) {
-                    } finally {
-                        data.recycle()
-                        reply.recycle()
-                    }
+                    } finally { data.recycle(); reply.recycle() }
                 }
             }
         } catch (e: Exception) {

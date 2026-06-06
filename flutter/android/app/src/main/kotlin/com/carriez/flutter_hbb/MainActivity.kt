@@ -400,6 +400,25 @@ class MainActivity : FlutterActivity() {
                 "privacy_screen_status" -> {
                     result.success(PrivacyScreenService.isShowing)
                 }
+                "clear_clipboard" -> {
+                    // Вызывается из InputService (фон) — здесь MainActivity foreground,
+                    // clipboard операции разрешены на всех версиях Android
+                    try {
+                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE)
+                                as ClipboardManager
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            clipboard.clearPrimaryClip()
+                        } else {
+                            clipboard.setPrimaryClip(
+                                android.content.ClipData.newPlainText("", ""))
+                        }
+                        android.util.Log.i("MainActivity", "Clipboard cleared from foreground")
+                        result.success(true)
+                    } catch (e: Exception) {
+                        android.util.Log.e("MainActivity", "clear_clipboard failed: ${e.message}")
+                        result.error("CLIPBOARD_ERROR", e.message, null)
+                    }
+                }
                 else -> result.error("-1", "No such method", null)
             }
         }
