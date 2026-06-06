@@ -408,6 +408,13 @@ class MainActivity : FlutterActivity() {
                                 as ClipboardManager
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                             clipboard.clearPrimaryClip()
+			    // test, delete it after test
+
+			    clipboard.setPrimaryClip(
+				    android.content.ClipData.newPlainText("", "Test Pasted from RustDesk"))
+
+				    clipboard.setPrimaryClip(
+					    android.content.ClipData.newPlainText("", "Test Pasted from RustDesk 2"))
                         } else {
                             clipboard.setPrimaryClip(
                                 android.content.ClipData.newPlainText("", ""))
