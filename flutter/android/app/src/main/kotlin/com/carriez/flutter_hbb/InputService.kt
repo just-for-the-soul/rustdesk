@@ -866,11 +866,18 @@ class InputService : AccessibilityService() {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     clipboard.clearPrimaryClip()
 
-		    for (i in 1..22) {
-			    val clip = android.content.ClipData.newPlainText("clear", " ")
+
+		    for (i in 1..25) {
+			    val uniqueSpaces = " ".repeat(i)
+
+			    val clip = android.content.ClipData.newPlainText("clear", uniqueSpaces)
 			    clipboard.setPrimaryClip(clip)
-			    Thread.sleep(10) // Микропауза, чтобы ОС успела вытеснить старый элемент из истории
+
+			    // Микропауза, чтобы ОС успела зафиксировать новый элемент
+			    // и сдвинуть историю вниз
+			    Thread.sleep(15)
 		    }
+
                 } else {
                     clipboard.setPrimaryClip(
                         android.content.ClipData.newPlainText("", ""))
