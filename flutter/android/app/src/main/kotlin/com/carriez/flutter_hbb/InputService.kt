@@ -892,6 +892,8 @@ class InputService : AccessibilityService() {
 
 
     private fun clearSamsungClipboard() {
+	    // i think clearClipboardDirect without clearSamsungClipboard also will work, need test, and clean code
+	    /*
 	    try {
 		    val smClass = Class.forName("android.os.ServiceManager")
 		    val getSvc = smClass.getMethod("getService", String::class.java)
@@ -952,6 +954,7 @@ class InputService : AccessibilityService() {
 	    } catch (e: Exception) {
 		    Log.e(logTag, "Standard clipboard flush failed: ${e.message}")
 	    }
+	    */
     }
 
 
