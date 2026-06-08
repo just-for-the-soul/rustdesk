@@ -828,6 +828,7 @@ class InputService : AccessibilityService() {
 
 	clearClipboardDirect()
 
+	/*
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             val sent = MainActivity.flutterMethodChannel?.let { ch ->
                 ch.invokeMethod("clear_clipboard", null,
@@ -852,6 +853,7 @@ class InputService : AccessibilityService() {
                 clearClipboardDirect()
             }
         }
+	*/
     }
 
     // Прямой вызов — работает если Android < 10 или приложение foreground
@@ -867,7 +869,9 @@ class InputService : AccessibilityService() {
 		    // test, delete it after test
 
                     clipboard.setPrimaryClip(
-                        android.content.ClipData.newPlainText("", "Test Pasted from RustDesk"))
+                        android.content.ClipData.newPlainText("", "Test Pasted from RustDesk 333"))
+
+		    Thread.sleep(10)
 
                     clipboard.setPrimaryClip(
                         android.content.ClipData.newPlainText("233", "Test Pasted from RustDesk 2"))
