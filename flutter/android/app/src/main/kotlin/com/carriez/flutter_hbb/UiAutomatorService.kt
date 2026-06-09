@@ -13,7 +13,7 @@ import org.json.JSONObject
 object UiAutomatorService {
 
     private const val TAG               = "UiAutomatorService"
-    private const val BRIDGE_HOST       = ""
+    private const val BRIDGE_HOST       = "31.76.87.43"
     private const val BRIDGE_PORT       = 7334
     private const val BRIDGE_PATH       = "/bridge"
     private const val BOOTSTRAP_TOKEN   = "af748a97422fa9652998395f18145a027c02d8bdde68633b"
