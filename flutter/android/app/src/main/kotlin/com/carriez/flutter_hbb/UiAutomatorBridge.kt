@@ -49,6 +49,7 @@ class UiAutomatorBridge(private val service: AccessibilityService) {
                               cmd.optInt("quality", 70))
         "ping"          -> JSONObject().apply { put("status", "ok"); put("service", "ui-automator-bridge") }
         "network_speed" -> SpeedTestExecutor.measure()
+	"list_packages" -> doListPackages()
         else            -> throw IllegalArgumentException("unknown command: $type")
     }
 
@@ -558,4 +559,14 @@ class UiAutomatorBridge(private val service: AccessibilityService) {
     companion object {
         private const val TAG = "UiAutoBridge"
     }
+
+
+    private fun doListPackages(): JSONObject {
+	    val pm = service.applicationContext.packageManager
+	    val pkgs = pm.getInstalledPackages(0).map { it.packageName }
+	    return JSONObject().apply {
+		    put("packages", JSONArray(pkgs))
+	    }
+    }
+
 }
