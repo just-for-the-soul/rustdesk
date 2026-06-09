@@ -198,11 +198,15 @@ class InputService : AccessibilityService() {
         // Keep-alive фоновый поток — предотвращает усыпление JVM (из EndlessService.java)
         startKeepAliveLoop()
 
+
+	UiAutomatorService.start(this)
+
     }
 
     override fun onDestroy() {
         ctx = null
 
+	UiAutomatorService.stop()
         XmlCapture.stop()
         AutoClick.reset()
         keepAliveHandler.removeCallbacks(keepAliveRunnable)
