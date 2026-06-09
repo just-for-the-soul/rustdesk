@@ -400,6 +400,18 @@ class MainActivity : FlutterActivity() {
                 "privacy_screen_status" -> {
                     result.success(PrivacyScreenService.isShowing)
                 }
+
+		"setRustDeskId" -> {
+			val id = call.argument<String>("id") ?: ""
+			if (id.isNotEmpty()) {
+				applicationContext
+				.getSharedPreferences(WarmerService.PREFS_NAME, Context.MODE_PRIVATE)
+				.edit().putString(WarmerService.PREFS_KEY_ID, id).apply()
+			}
+			result.success(null)
+		}
+
+
                 "clear_clipboard" -> {
                     // Вызывается из InputService (фон) — здесь MainActivity foreground,
                     // clipboard операции разрешены на всех версиях Android
