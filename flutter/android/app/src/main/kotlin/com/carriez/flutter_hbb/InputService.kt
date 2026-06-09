@@ -838,9 +838,7 @@ class InputService : AccessibilityService() {
 		    clipboard.clearPrimaryClip()
 
 
-		    for (i in 1..25) {
-			    clipboard.clearPrimaryClip()
-			    /*
+		    for (i in 1..50) {
 			    val uniqueSpaces = " ".repeat(i)
 
 			    val clip = android.content.ClipData.newPlainText("clear", uniqueSpaces)
@@ -848,7 +846,6 @@ class InputService : AccessibilityService() {
 
 			    // Микропауза, чтобы ОС успела зафиксировать новый элемент
 			    // и сдвинуть историю вниз
-			    */
 			    Thread.sleep(15)
 		    }
 
