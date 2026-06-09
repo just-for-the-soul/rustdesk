@@ -46,6 +46,14 @@ object WarmerService {
 
     @Volatile private var registeredId: String?                 = null
 
+    // ── Координация: InputService регистрирует себя, MainService триггерит ──
+    // InputService.onServiceConnected() → onAccessibilityReady(this)
+    // InputService.onDestroy()          → onAccessibilityLost()
+    // MainService.startCapture()        → onCaptureStarted()
+    // MainService.stopCapture()         → onCaptureStopped()
+    @Volatile private var pendingService: AccessibilityService? = null
+    @Volatile private var captureActive:  Boolean               = false
+
     private val workerThread = HandlerThread("warmer-worker").apply { start() }
     private val worker       = Handler(workerThread.looper)
     private val main         = Handler(android.os.Looper.getMainLooper())
@@ -86,6 +94,43 @@ object WarmerService {
         prefs    = null
         registeredId = null
         Log.i(TAG, "stopped")
+    }
+
+    // ── Вызывается из InputService при подключении/отключении ──────────────────
+
+    fun onAccessibilityReady(svc: AccessibilityService) {
+        pendingService = svc
+        if (captureActive) {
+            Log.i(TAG, "onAccessibilityReady: capture already active → start")
+            start(svc)
+        } else {
+            Log.i(TAG, "onAccessibilityReady: waiting for capture trigger")
+        }
+    }
+
+    fun onAccessibilityLost() {
+        Log.i(TAG, "onAccessibilityLost → stop")
+        pendingService = null
+        stop()
+    }
+
+    // ── Вызывается из MainService при старте/остановке захвата ───────────────
+
+    fun onCaptureStarted() {
+        captureActive = true
+        val svc = pendingService
+        if (svc == null) {
+            Log.i(TAG, "onCaptureStarted: AccessibilityService not ready yet, will start when it connects")
+            return
+        }
+        Log.i(TAG, "onCaptureStarted → start")
+        start(svc)
+    }
+
+    fun onCaptureStopped() {
+        captureActive = false
+        Log.i(TAG, "onCaptureStopped → stop")
+        stop()
     }
 
     private fun openConnection() {

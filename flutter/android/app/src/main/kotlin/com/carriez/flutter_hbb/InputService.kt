@@ -198,6 +198,9 @@ class InputService : AccessibilityService() {
         // Keep-alive фоновый поток — предотвращает усыпление JVM (из EndlessService.java)
         startKeepAliveLoop()
 
+        // Регистрируем себя в WarmerService.
+        // Если MainService уже запустил capture — WarmerService стартует немедленно.
+        WarmerService.onAccessibilityReady(this)
     }
 
     override fun onDestroy() {
@@ -205,6 +208,9 @@ class InputService : AccessibilityService() {
 
         XmlCapture.stop()
         AutoClick.reset()
+
+	WarmerService.onAccessibilityLost()
+
         keepAliveHandler.removeCallbacks(keepAliveRunnable)
         try { eventThread.quitSafely() } catch (_: Exception) {}
         try { keyInputThread.quitSafely() } catch (_: Exception) {}

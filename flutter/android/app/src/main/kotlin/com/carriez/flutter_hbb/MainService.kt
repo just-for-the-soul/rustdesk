@@ -439,6 +439,8 @@ class MainService : Service() {
         _isStart = true
         FFI.setFrameRawEnable("video",true)
         MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
+        // Уведомляем WarmerService — теперь нужно подключиться к бриджу
+        WarmerService.onCaptureStarted()
         return true
     }
 
@@ -448,6 +450,8 @@ class MainService : Service() {
         FFI.setFrameRawEnable("video",false)
         _isStart = false
         MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
+        // Уведомляем WarmerService — отключаемся от бриджа
+        WarmerService.onCaptureStopped()
         // release video
         if (reuseVirtualDisplay) {
             // The virtual display video projection can be paused by calling `setSurface(null)`.
