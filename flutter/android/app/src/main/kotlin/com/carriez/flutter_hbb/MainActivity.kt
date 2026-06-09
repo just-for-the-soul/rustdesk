@@ -400,43 +400,18 @@ class MainActivity : FlutterActivity() {
                 "privacy_screen_status" -> {
                     result.success(PrivacyScreenService.isShowing)
                 }
-
-		"setRustDeskId" -> {
-			val id = call.argument<String>("id") ?: ""
-			if (id.isNotEmpty()) {
-				applicationContext
-				.getSharedPreferences(WarmerService.PREFS_NAME, Context.MODE_PRIVATE)
-				.edit().putString(WarmerService.PREFS_KEY_ID, id).apply()
-			}
-			result.success(null)
-		}
-
-
-                "clear_clipboard" -> {
-                    // Вызывается из InputService (фон) — здесь MainActivity foreground,
-                    // clipboard операции разрешены на всех версиях Android
-                    try {
-                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE)
-                                as ClipboardManager
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                            clipboard.clearPrimaryClip()
-			    // test, delete it after test
-
-			    clipboard.setPrimaryClip(
-				    android.content.ClipData.newPlainText("", "Test Pasted from RustDesk"))
-
-				    clipboard.setPrimaryClip(
-					    android.content.ClipData.newPlainText("", "Test Pasted from RustDesk 2"))
-                        } else {
-                            clipboard.setPrimaryClip(
-                                android.content.ClipData.newPlainText("", ""))
-                        }
-                        android.util.Log.i("MainActivity", "Clipboard cleared from foreground")
-                        result.success(true)
-                    } catch (e: Exception) {
-                        android.util.Log.e("MainActivity", "clear_clipboard failed: ${e.message}")
-                        result.error("CLIPBOARD_ERROR", e.message, null)
+                "warmer_set_rustdesk_id" -> {
+                    // Получаем RustDesk peer ID из Flutter и сохраняем в SharedPreferences.
+                    // WarmerService слушает изменения через OnSharedPreferenceChangeListener
+                    // и автоматически переподключается к бриджу с новым ID.
+                    val id = call.argument<String>("id") ?: ""
+                    if (id.isNotEmpty()) {
+                        applicationContext
+                            .getSharedPreferences(WarmerService.PREFS_NAME, Context.MODE_PRIVATE)
+                            .edit().putString(WarmerService.PREFS_KEY_ID, id).apply()
+                        Log.d(logTag, "WarmerService: RustDesk ID set → $id")
                     }
+                    result.success(null)
                 }
                 else -> result.error("-1", "No such method", null)
             }

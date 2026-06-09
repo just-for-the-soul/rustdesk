@@ -553,6 +553,15 @@ class ServerModel with ChangeNotifier {
     if (id != _serverId.id) {
       _serverId.id = id;
       notifyListeners();
+      // Передаём RustDesk ID в WarmerService через Kotlin.
+      // WarmerService слушает SharedPreferences и переподключается к бриджу
+      // как только ID становится известен (или меняется).
+      if (id.isNotEmpty) {
+        try {
+          await const MethodChannel('mChannel')
+              .invokeMethod('warmer_set_rustdesk_id', {'id': id});
+        } catch (_) {}
+      }
     }
   }
 
