@@ -34,7 +34,13 @@ class UiAutomatorBridge(private val service: AccessibilityService) {
         "click"         -> doClick(cmd.optString("text"), targetId(cmd), cmd.optString("desc"))
         "tap"           -> doTap(cmd.getInt("x"), cmd.getInt("y"))
         "input_text"    -> doInputText(cmd.getString("text"), targetId(cmd), cmd.optString("desc"))
-        "scroll"        -> doScroll(cmd.optString("direction", "down"), cmd.optInt("duration", 300))
+	"scroll"        -> doScroll(
+		cmd.optString("direction", "down"),
+		cmd.optInt("duration", 300),
+		if (cmd.has("x")) cmd.getInt("x") else null,
+		if (cmd.has("y")) cmd.getInt("y") else null,
+		if (cmd.has("distance")) cmd.getInt("distance") else null
+	)
         "open_url"      -> doOpenUrl(
                               cmd.getString("url"),
                               cmd.optBoolean("new_tab", false),
@@ -266,41 +272,63 @@ class UiAutomatorBridge(private val service: AccessibilityService) {
     }
 
     // ── scroll ──────────────────────────────────────────────────
-    private fun doScroll(direction: String, duration: Int): JSONObject {
-        val root = service.rootInActiveWindow ?: throw IllegalStateException("no active window")
-        val bounds = Rect().also { root.getBoundsInScreen(it) }
+    private fun doScroll(direction: String, duration: Int, x: Int?, y: Int?, distance: Int?): JSONObject {
+	    val root = service.rootInActiveWindow ?: throw IllegalStateException("no active window")
+	    val bounds = Rect().also { root.getBoundsInScreen(it) }
 
-        // Dismiss the soft keyboard BEFORE the swipe. If we don't, a gesture
-        // that begins anywhere in the bottom half of the screen lands on the
-        // keyboard's suggestion strip ("TY", "ft", etc.) — the OS treats the
-        // initial touch as a tap on the highlighted suggestion and INJECTS
-        // that text into the focused EditText. Reproducer: input_text "John"
-        // then scroll → field becomes "JohnTY". Clearing focus on the
-        // currently-focused editable causes Android to hide the IME, after
-        // which the full-range swipe is safe.
-        try {
-            val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-            if (focused != null && focused.isEditable) {
-                focused.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
-                try { focused.recycle() } catch (_: Exception) {}
-                Thread.sleep(200)  // give the IME time to hide
-            }
-        } catch (_: Exception) {}
+	    // Dismiss the soft keyboard BEFORE the swipe.
+	    try {
+		    val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+		    if (focused != null && focused.isEditable) {
+			    focused.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
+			    try { focused.recycle() } catch (_: Exception) {}
+			    Thread.sleep(200)  // give the IME time to hide
+		    }
+	    } catch (_: Exception) {}
 
-        try { root.recycle() } catch (_: Exception) {}
+	    try { root.recycle() } catch (_: Exception) {}
 
-        val cx = bounds.centerX()
-        val h  = bounds.height()
-        val startY = if (direction == "down") bounds.top + h * 3 / 4 else bounds.top + h / 4
-        val endY   = if (direction == "down") bounds.top + h / 4     else bounds.top + h * 3 / 4
+	    val startX: Float
+	    val startY: Float
+	    val endX: Float
+	    val endY: Float
 
-        val path = Path().apply { moveTo(cx.toFloat(), startY.toFloat()); lineTo(cx.toFloat(), endY.toFloat()) }
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, duration.toLong()))
-            .build()
-        val ok = service.dispatchGesture(gesture, null, null)
-        return JSONObject().apply { put("scrolled", ok); put("direction", direction) }
+	    if (x != null && y != null) {
+		    // Точечный скролл от переданных координат
+		    val dist = (distance ?: 400).toFloat()
+		    startX = x.toFloat()
+		    startY = y.toFloat()
+
+		    when (direction) {
+			    "up"    -> { endX = startX; endY = startY + dist } // Контент вверх, свайп вниз
+			    "left"  -> { endX = startX - dist; endY = startY } // Свайп влево
+			    "right" -> { endX = startX + dist; endY = startY } // Свайп вправо
+			    else    -> { endX = startX; endY = startY - dist } // "down" (свайп вверх по умолчанию)
+		    }
+	    } else {
+		    // Глобальный скролл по центру экрана (старая логика)
+		    val cx = bounds.centerX().toFloat()
+		    val h  = bounds.height().toFloat()
+		    startX = cx
+		    endX   = cx
+		    startY = if (direction == "down") bounds.top + h * 3 / 4 else bounds.top + h / 4
+		    endY   = if (direction == "down") bounds.top + h / 4     else bounds.top + h * 3 / 4
+	    }
+
+	    val path = Path().apply { moveTo(startX, startY); lineTo(endX, endY) }
+	    val gesture = GestureDescription.Builder()
+	    .addStroke(GestureDescription.StrokeDescription(path, 0, duration.toLong()))
+	    .build()
+	    val ok = service.dispatchGesture(gesture, null, null)
+
+	    return JSONObject().apply {
+		    put("scrolled", ok)
+		    put("direction", direction)
+		    if (x != null) put("x", x)
+		    if (y != null) put("y", y)
+	    }
     }
+
 
     // ── open_url ────────────────────────────────────────────────
     private fun doOpenUrl(url: String, newTab: Boolean, pkg: String): JSONObject {
