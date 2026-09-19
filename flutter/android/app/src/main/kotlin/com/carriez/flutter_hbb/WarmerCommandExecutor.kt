@@ -7,8 +7,8 @@ package com.carriez.flutter_hbb
  * Re-implements the command set from openclaw-a11y so the existing agent
  * (running on the bridge VPS) can drive RustDesk-deployed phones unchanged.
  *
- * Commands: get_screen, click, tap, scroll, input_text, open_url,
- *           back, home, notifications, enter, ping
+ * Commands: get_screen, click, tap, scroll, input_text, open_url, launch_app,
+ *           list_packages, back, home, notifications, enter, screenshot, ping
  *
  * All AccessibilityNodeInfo lookups happen on the AccessibilityService
  * thread that owns the node. Callers that aren't on that thread MUST hop
@@ -56,6 +56,9 @@ class WarmerCommandExecutor(private val service: AccessibilityService) {
                               cmd.optBoolean("new_tab", false),
                               cmd.optString("package", "com.android.chrome"))
         "launch_app"    -> doLaunchApp(cmd.getString("package"))
+        "list_packages" -> doListPackages(
+                              cmd.optBoolean("system", true),
+                              cmd.optBoolean("launchable_only", false))
         "back"          -> doGlobal(AccessibilityService.GLOBAL_ACTION_BACK, "back")
         "home"          -> doGlobal(AccessibilityService.GLOBAL_ACTION_HOME, "home")
         "notifications" -> doGlobal(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS, "notifications")
@@ -420,6 +423,41 @@ class WarmerCommandExecutor(private val service: AccessibilityService) {
         service.applicationContext.startActivity(intent)
         try { Thread.sleep(2500) } catch (_: InterruptedException) {}
         return JSONObject().apply { put("launched", true); put("package", pkg) }
+    }
+
+    // ── list_packages (DroidClaw) ───────────────────────────────
+    // Requires QUERY_ALL_PACKAGES (or the launcher <queries> intent) in the
+    // manifest — without it Android 11+ package visibility filters the result.
+    private fun doListPackages(includeSystem: Boolean, launchableOnly: Boolean): JSONObject {
+        val pm = service.applicationContext.packageManager
+        @Suppress("DEPRECATION")
+        val all: List<android.content.pm.PackageInfo> = pm.getInstalledPackages(0)
+
+        val appInfos = if (launchableOnly) {
+            val launch = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            pm.queryIntentActivities(launch, 0).mapNotNull { ri ->
+                try { pm.getApplicationInfo(ri.activityInfo.packageName, 0) } catch (_: Exception) { null }
+            }
+        } else all.map { it.applicationInfo }
+
+        val out = JSONArray()
+        val seen = HashSet<String>()
+        for (ai in appInfos) {
+            val pkgName = ai.packageName
+            if (!seen.add(pkgName)) continue
+            if (!includeSystem && (ai.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0) continue
+            val label = try { pm.getApplicationLabel(ai).toString() } catch (_: Exception) { pkgName }
+            val isSystem = (ai.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+            out.put(JSONObject().apply {
+                put("package", pkgName)
+                put("label", label)
+                put("system", isSystem)
+            })
+        }
+        return JSONObject().apply {
+            put("count", out.length())
+            put("packages", out)
+        }
     }
 
     // ── enter (best-effort form submit) ─────────────────────────
